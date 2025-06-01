@@ -33,8 +33,6 @@ def calculator(operation: str, num1: float, num2: float) -> dict:
             if num1 == 0:
                 return {"error": "Base cannot be 0"}
             result = pow(num1, num2)
-        elif operation == "sine":
-            result = math.sin(math.radians(num1))
         else:
             return {"error": f"Unsupported operation: {operation}. Use: add, subtract, multiply, divide, power"}
         
@@ -50,28 +48,46 @@ def calculator(operation: str, num1: float, num2: float) -> dict:
         return {"error": str(e)}
 
 @mcp.tool()
-def trig(operation: str, theta: float) -> dict:
+def trig(operation: str, num1: float, unit: str) -> dict:
     """
-    Performs trigonometric operation on an angle in degree.
-    Supports: sine, cosine, tangent
+    Performs trigonometric operations, with input/output angle (in unit of degree or radian).
+    Supports: sine, cosine, tangent, arc sine, arc cosine, arc tangent
     """
-    logging.info(f"Trig called: {operation} {theta}")
+    logging.info(f"Trig called: {operation} {num1} in {unit}")
+
 
     try:
+        unit = unit.lower()
         if operation == "sine":
-            result = math.sin(math.radians(theta))
+            arg1 = num1 if unit.startswith("rad") else math.radians(num1)
+            result = math.sin(arg1)
         elif operation == "cosine":
-            result = math.cos(math.radians(theta))
+            arg1 = num1 if unit.startswith("rad") else math.radians(num1)
+            result = math.cos(arg1)
         elif operation == "tangent":
-            result = math.tan(math.radians(theta))
+            arg1 = num1 if unit.startswith("rad") else math.radians(num1)
+            result = math.tan(arg1)
+        elif operation == "arc sine":
+            result = math.asin(num1)
+            if not unit.startswith("rad"):
+                result =  math.degrees(result)
+        elif operation == "arc cosine":
+            result = math.acos(num1)
+            if not unit.startswith("rad"):
+                result =  math.degrees(result)
+        elif operation == "arc tangent":
+            result = math.atan(num1)
+            if not unit.startswith("rad"):
+                result =  math.degrees(result)
         else:
-            return {"error": f"Unsupported operation: {operation}. Use: sine, cosine, tangent"}
+            return {"error": f"Unsupported operation: {operation}. Use: sine, cosine, tangent, arc sine, arc cosine, arc tangent"}
         
         return {
             "operation": operation,
-            "theta": theta,
+            "num1": num1,
+            "unit": unit,
             "result": result,
-            "expression": f"{operation} ( {theta} ) = {result}"
+            "expression": f"{operation} ( {num1} ) = {result}"
         }
     except Exception as e:
         logging.error(f"Trig error: {e}")

@@ -74,7 +74,7 @@ The issue is in the enhanced MCP client - it's looking for `stock://{ticker}` in
 Try these queries in your enhanced client:
 
 ```bash
-python mcp_client_llm.py
+python mcp_client_llm_resource.py
 ```
 
 Then test:

@@ -149,7 +149,7 @@ For each user query, respond with ONLY a JSON object in this exact format:
 
 Tool-specific parameter requirements:
 - calculator: operation (add/subtract/multiply/divide), num1 (number), num2 (number)
-- trig: operation (sine/cosine/tangent), theta (float)
+- trig: operation (sine/cosine/tangent/arc sine/arc cosine/arc tangent), num1 (float), unit(str)
 - stock_quote: ticker (stock symbol like AAPL, MSFT)
 - health: no parameters needed
 - echo: message (text to echo back)
@@ -167,7 +167,7 @@ User: "What is 15 plus 27?"
 Response: {{"tool": "calculator", "params": {{"operation": "add", "num1": 15, "num2": 27}}, "confidence": 0.98, "reasoning": "Clear arithmetic addition request"}}
 
 User: "What is sine 30 degrees?"
-Response: {{"tool": "trig", "params": {{"operation": "sine", "theta": 30}}, "confidence": 0.98, "reasoning": "Clear trigonometic sine function request"}}
+Response: {{"tool": "trig", "params": {{"operation": "sine", "num1": 30, "unit": "degree"}}, "confidence": 0.98, "reasoning": "Clear trigonometic sine function request"}}
 
 User: "Get Apple stock price"
 Response: {{"tool": "stock_quote", "params": {{"ticker": "AAPL"}}, "confidence": 0.95, "reasoning": "Request for Apple (AAPL) stock information"}}
@@ -498,7 +498,7 @@ async def run_llm_demo():
                     # Fallback tool definitions
                     available_tools = [
                         {"name": "calculator", "description": "Perform arithmetic operations"},
-                        {"name": "trig", "description": "Performs trigonometric operation on an angle in degree"},
+                        {"name": "trig", "description": "Performs trigonometric operations"},
                         {"name": "stock_quote", "description": "Get stock price data"},
                         {"name": "health", "description": "Check server health"},
                         {"name": "echo", "description": "Echo back messages"}

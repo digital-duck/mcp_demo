@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
-
+"""
+this script tests `client.list_tools()`
+"""
 from fastmcp import Client
 import asyncio
 

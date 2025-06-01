@@ -158,7 +158,7 @@ For each user query, respond with ONLY a JSON object in this exact format:
 
 Tool-specific parameter requirements:
 - calculator: operation (add/subtract/multiply/divide), num1 (number), num2 (number)
-- trig: operation (sine/cosine/tangent), theta (float)
+- trig: operation (sine/cosine/tangent/arc sine/arc cosine/arc tangent), num1 (float), unit(str)
 - stock_quote: ticker (stock symbol like AAPL, MSFT)
 - health: no parameters needed
 - echo: message (text to echo back)
@@ -555,9 +555,10 @@ def format_result(tool_name: str, result: Dict) -> str:
                 return f"📐 {expression}"
             else:
                 operation = result.get('operation', '?')
-                theta = result.get('theta', '?')
+                num1 = result.get('num1', '?')
+                unit = result.get('unit', '?')
                 trig_result = result.get('result', '?')
-                return f"📐 {operation}({theta}°) = {trig_result}"
+                return f"📐 {operation}({num1}) = {trig_result} [unit: {unit}]"
         elif "error" in result:
             return f"❌ Trig Error: {result['error']}"
     
@@ -623,7 +624,7 @@ async def run_llm_demo():
                     # Fallback tool definitions
                     available_tools = [
                         {"name": "calculator", "description": "Perform arithmetic operations"},
-                        {"name": "trig", "description": "Performs trigonometric operation on an angle in degree"},
+                        {"name": "trig", "description": "Performs trigonometric operations"},
                         {"name": "stock_quote", "description": "Get stock price data"},
                         {"name": "health", "description": "Check server health"},
                         {"name": "echo", "description": "Echo back messages"}
