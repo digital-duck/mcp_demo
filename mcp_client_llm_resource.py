@@ -8,21 +8,15 @@ from fastmcp import Client
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# LLM Integration Options - Choose one:
-# Option 1: OpenAI API
-# Option 2: Anthropic Claude API  
-# Option 3: Local LLM via Ollama
-# Option 4: Google Gemini API
-# Option 5: AWS Bedrock Claude 3.5
+# LLM Integration Options - Enhanced with Claude 3.5 Sonnet and GPT-4o-mini
+LLM_MODELS = ["openai", "anthropic", "ollama", "gemini", "bedrock"]
+LLM_PROVIDER = "anthropic"  # Default to Claude 3.5 Sonnet
 
-LLM_MODELS = ["openai", "anthropic", "ollama", "gemini",  "bedrock"]
-LLM_PROVIDER = "gemini"
-
-# --- LLM Query Parser ---
+# --- Enhanced LLM Query Parser ---
 class LLMQueryParser:
     """Use LLM to parse natural language queries into tool calls"""
     
-    def __init__(self, provider: str = "ollama"):
+    def __init__(self, provider: str = "anthropic"):
         self.provider = provider
         self.setup_llm_client()
     
@@ -31,8 +25,24 @@ class LLMQueryParser:
         if self.provider == "openai":
             try:
                 import openai
-                self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                logging.info("✅ OpenAI client initialized")
+                api_key = os.getenv("OPENAI_API_KEY")
+                if api_key:
+                    self.client = openai.OpenAI(api_key=api_key)
+                    # Test with a simple completion to verify API access
+                    try:
+                        test_response = self.client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{"role": "user", "content": "test"}],
+                            max_tokens=1
+                        )
+                        logging.info("✅ OpenAI client initialized with GPT-4o-mini")
+                        self.model_name = "gpt-4o-mini"
+                    except Exception as e:
+                        logging.warning(f"GPT-4o-mini not accessible, falling back to gpt-3.5-turbo: {e}")
+                        self.model_name = "gpt-3.5-turbo"
+                else:
+                    logging.error("❌ OPENAI_API_KEY not set")
+                    self.client = None
             except ImportError:
                 logging.error("❌ OpenAI library not installed. Run: pip install openai")
                 self.client = None
@@ -40,8 +50,34 @@ class LLMQueryParser:
         elif self.provider == "anthropic":
             try:
                 import anthropic
-                self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                logging.info("✅ Anthropic client initialized")
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                if api_key:
+                    self.client = anthropic.Anthropic(api_key=api_key)
+                    # Test with Claude 3.5 Sonnet
+                    try:
+                        test_response = self.client.messages.create(
+                            model="claude-3-5-sonnet-20241022",
+                            max_tokens=1,
+                            messages=[{"role": "user", "content": "test"}]
+                        )
+                        logging.info("✅ Anthropic client initialized with Claude 3.5 Sonnet")
+                        self.model_name = "claude-3-5-sonnet-20241022"
+                    except Exception as e:
+                        logging.warning(f"Claude 3.5 Sonnet not accessible, trying Claude 3 Haiku: {e}")
+                        try:
+                            test_response = self.client.messages.create(
+                                model="claude-3-haiku-20240307",
+                                max_tokens=1,
+                                messages=[{"role": "user", "content": "test"}]
+                            )
+                            self.model_name = "claude-3-haiku-20240307"
+                            logging.info("✅ Anthropic client initialized with Claude 3 Haiku")
+                        except Exception as e2:
+                            logging.error(f"❌ Anthropic API error: {e2}")
+                            self.client = None
+                else:
+                    logging.error("❌ ANTHROPIC_API_KEY not set")
+                    self.client = None
             except ImportError:
                 logging.error("❌ Anthropic library not installed. Run: pip install anthropic")
                 self.client = None
@@ -54,6 +90,7 @@ class LLMQueryParser:
                 if response.status_code == 200:
                     logging.info("✅ Ollama server detected")
                     self.client = "ollama"  # Use string indicator
+                    self.model_name = "llama3.2"
                 else:
                     logging.error("❌ Ollama server not responding")
                     self.client = None
@@ -68,17 +105,30 @@ class LLMQueryParser:
                 api_key = os.getenv("GEMINI_API_KEY")
                 if api_key:
                     genai.configure(api_key=api_key)
-                    # https://ai.google.dev/gemini-api/docs/models
+                    # Updated Gemini models list
                     gemini_models = [
-                            "gemini-2.5-flash-preview-05-20",
-                            "gemini-2.5-pro-preview-05-06",
-                            "gemini-2.0-flash",
-                            "gemini-1.5-flash",
-                            "gemini-1.5-pro",
-                        ]
-                    model_name = gemini_models[3]
-                    self.client = genai.GenerativeModel(model_name)
-                    logging.info("✅ Gemini client initialized")
+                        "gemini-2.0-flash-exp",
+                        "gemini-exp-1206", 
+                        "gemini-2.0-flash-thinking-exp-1219",
+                        "gemini-1.5-pro",
+                        "gemini-1.5-flash",
+                    ]
+                    
+                    # Try models in order of preference
+                    for model_name in gemini_models:
+                        try:
+                            self.client = genai.GenerativeModel(model_name)
+                            # Test the model
+                            test_response = self.client.generate_content("test", generation_config={"max_output_tokens": 1})
+                            self.model_name = model_name
+                            logging.info(f"✅ Gemini client initialized with {model_name}")
+                            break
+                        except Exception as e:
+                            logging.warning(f"Model {model_name} not available: {e}")
+                            continue
+                    else:
+                        logging.error("❌ No Gemini models available")
+                        self.client = None
                 else:
                     logging.error("❌ GEMINI_API_KEY not set")
                     self.client = None
@@ -91,13 +141,6 @@ class LLMQueryParser:
                 import boto3
                 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
                 
-                # Initialize Bedrock client
-                # AWS credentials should be configured via:
-                # 1. AWS CLI: aws configure
-                # 2. Environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
-                # 3. IAM roles (if running on EC2)
-                # 4. AWS SSO
-                
                 region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
                 
                 try:
@@ -106,18 +149,14 @@ class LLMQueryParser:
                         region_name=region
                     )
                     
-                    # Test connection with a simple call
-                    # Note: We'll test this during the first actual query to avoid unnecessary calls
-                    self.bedrock_model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"  # Claude 3.5 Sonnet
+                    # Updated model ID for Claude 3.5 Sonnet v2
+                    self.bedrock_model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+                    self.model_name = self.bedrock_model_id
                     logging.info(f"✅ AWS Bedrock client initialized (region: {region})")
                     logging.info(f"📋 Using model: {self.bedrock_model_id}")
                     
                 except (NoCredentialsError, PartialCredentialsError) as e:
                     logging.error(f"❌ AWS credentials not configured: {e}")
-                    logging.error("Configure AWS credentials using one of these methods:")
-                    logging.error("  1. AWS CLI: aws configure")
-                    logging.error("  2. Environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY")
-                    logging.error("  3. IAM roles (if running on AWS)")
                     self.client = None
                     
             except ImportError:
@@ -157,8 +196,8 @@ For each user query, respond with ONLY a JSON object in this exact format:
 }}
 
 Tool-specific parameter requirements:
-- calculator: operation (add/subtract/multiply/divide), num1 (number), num2 (number)
-- trig: operation (sine/cosine/tangent/arc sine/arc cosine/arc tangent), num1 (float), unit(str)
+- calculator: operation (add/subtract/multiply/divide/power), num1 (number), num2 (number)
+- trig: operation (sine/cosine/tangent/arc sine/arc cosine/arc tangent), num1 (float), unit (degree/radian)
 - stock_quote: ticker (stock symbol like AAPL, MSFT)
 - health: no parameters needed
 - echo: message (text to echo back)
@@ -180,6 +219,9 @@ If you cannot determine which action to take, respond with:
 Examples:
 User: "What is 15 plus 27?"
 Response: {{"action": "tool", "tool": "calculator", "resource_uri": null, "params": {{"operation": "add", "num1": 15, "num2": 27}}, "confidence": 0.98, "reasoning": "Clear arithmetic addition request"}}
+
+User: "Find sine of 30 degrees"
+Response: {{"action": "tool", "tool": "trig", "resource_uri": null, "params": {{"operation": "sine", "num1": 30, "unit": "degree"}}, "confidence": 0.95, "reasoning": "Trigonometric function request with angle in degrees"}}
 
 User: "Tell me about Apple as a company"
 Response: {{"action": "resource", "tool": null, "resource_uri": "stock://AAPL", "params": {{}}, "confidence": 0.90, "reasoning": "Request for Apple company information from stock resource"}}
@@ -203,20 +245,20 @@ Remember: Respond with ONLY the JSON object, no additional text."""
         try:
             if self.provider == "openai":
                 response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model=self.model_name,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": query}
                     ],
                     temperature=0.1,
-                    max_tokens=200
+                    max_tokens=300
                 )
                 llm_response = response.choices[0].message.content.strip()
             
             elif self.provider == "anthropic":
                 response = self.client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=200,
+                    model=self.model_name,
+                    max_tokens=300,
                     temperature=0.1,
                     system=system_prompt,
                     messages=[{"role": "user", "content": query}]
@@ -226,12 +268,12 @@ Remember: Respond with ONLY the JSON object, no additional text."""
             elif self.provider == "ollama":
                 import requests
                 payload = {
-                    "model": "llama3.2",  # or "mistral", "codellama", etc.
+                    "model": self.model_name,
                     "prompt": f"{system_prompt}\n\nUser: {query}\nResponse:",
                     "stream": False,
                     "options": {
                         "temperature": 0.1,
-                        "num_predict": 200
+                        "num_predict": 300
                     }
                 }
                 response = requests.post("http://localhost:11434/api/generate", json=payload, timeout=30)
@@ -246,7 +288,7 @@ Remember: Respond with ONLY the JSON object, no additional text."""
                     f"{system_prompt}\n\nUser: {query}",
                     generation_config={
                         "temperature": 0.1,
-                        "max_output_tokens": 200
+                        "max_output_tokens": 300
                     }
                 )
                 llm_response = response.text.strip()
@@ -254,10 +296,9 @@ Remember: Respond with ONLY the JSON object, no additional text."""
             elif self.provider == "bedrock":
                 import json as json_lib
                 
-                # Construct the request for Claude 3.5 Sonnet
                 request_body = {
                     "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 200,
+                    "max_tokens": 300,
                     "temperature": 0.1,
                     "system": system_prompt,
                     "messages": [
@@ -268,7 +309,6 @@ Remember: Respond with ONLY the JSON object, no additional text."""
                     ]
                 }
                 
-                # Make the request to Bedrock
                 response = self.client.invoke_model(
                     modelId=self.bedrock_model_id,
                     body=json_lib.dumps(request_body),
@@ -276,7 +316,6 @@ Remember: Respond with ONLY the JSON object, no additional text."""
                     accept="application/json"
                 )
                 
-                # Parse the response
                 response_body = json_lib.loads(response['body'].read())
                 llm_response = response_body['content'][0]['text'].strip()
                 
@@ -288,8 +327,20 @@ Remember: Respond with ONLY the JSON object, no additional text."""
             # Clean up the response - sometimes LLMs add extra text
             if llm_response.startswith("```json"):
                 llm_response = llm_response.replace("```json", "").replace("```", "").strip()
+            elif llm_response.startswith("```"):
+                llm_response = llm_response.replace("```", "").strip()
             
-            parsed_response = json.loads(llm_response)
+            # Handle case where LLM wraps response in additional text
+            try:
+                parsed_response = json.loads(llm_response)
+            except json.JSONDecodeError:
+                # Try to extract JSON from the response
+                import re
+                json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+                if json_match:
+                    parsed_response = json.loads(json_match.group())
+                else:
+                    raise
             
             # Validate the response structure
             if not isinstance(parsed_response, dict):
@@ -305,7 +356,7 @@ Remember: Respond with ONLY the JSON object, no additional text."""
                 logging.warning(f"Low confidence ({confidence}) in LLM parsing: {parsed_response.get('reasoning')}")
                 return None
             
-            logging.info(f"🤖 LLM parsed query: {parsed_response.get('reasoning')} (confidence: {confidence})")
+            logging.info(f"🤖 LLM ({self.provider}:{getattr(self, 'model_name', 'unknown')}) parsed query: {parsed_response.get('reasoning')} (confidence: {confidence})")
             
             return parsed_response
             
@@ -330,6 +381,7 @@ class RuleBasedQueryParser:
             ("subtract", ["minus", "subtract", "-", "difference"]),
             ("multiply", ["times", "multiply", "*", "×", "product"]),
             ("divide", ["divide", "divided by", "/", "÷"]),
+            ("power", ["power", "to the power", "raised to", "^", "**"]),
         ]
         
         for operation, keywords in patterns:
@@ -353,21 +405,62 @@ class RuleBasedQueryParser:
         return None
     
     @staticmethod
+    def parse_trig_query(query: str) -> Optional[Dict[str, Any]]:
+        import re
+        query_lower = query.lower().strip()
+        
+        # Trigonometric operations
+        trig_patterns = [
+            ("sine", ["sine", "sin"]),
+            ("cosine", ["cosine", "cos"]),
+            ("tangent", ["tangent", "tan"]),
+            ("arc sine", ["arc sine", "arcsin", "asin", "inverse sine"]),
+            ("arc cosine", ["arc cosine", "arccos", "acos", "inverse cosine"]),
+            ("arc tangent", ["arc tangent", "arctan", "atan", "inverse tangent"]),
+        ]
+        
+        for operation, keywords in trig_patterns:
+            for keyword in keywords:
+                if keyword in query_lower:
+                    # Extract number
+                    numbers = re.findall(r'-?\d+(?:\.\d+)?', query)
+                    if numbers:
+                        # Determine unit
+                        unit = "degree"  # default
+                        if any(word in query_lower for word in ["radian", "rad"]):
+                            unit = "radian"
+                        
+                        try:
+                            return {
+                                "action": "tool",
+                                "tool": "trig",
+                                "resource_uri": None,
+                                "params": {
+                                    "operation": operation,
+                                    "num1": float(numbers[0]),
+                                    "unit": unit
+                                }
+                            }
+                        except ValueError:
+                            pass
+        return None
+    
+    @staticmethod
     def parse_stock_query(query: str) -> Optional[Dict[str, Any]]:
         import re
         query_lower = query.lower().strip()
         
         # Check for company info requests
-        info_keywords = ["about", "company", "info", "information", "describe", "tell me about"]
+        info_keywords = ["about", "company", "info", "information", "describe", "tell me about", "what is"]
         is_info_request = any(keyword in query_lower for keyword in info_keywords)
         
         # Check for price requests
-        price_keywords = ["stock", "price", "quote", "ticker", "share", "trading", "cost"]
+        price_keywords = ["stock", "price", "quote", "ticker", "share", "trading", "cost", "current"]
         is_price_request = any(keyword in query_lower for keyword in price_keywords)
         
         # Extract ticker symbols
         tickers = re.findall(r'\b[A-Z]{2,5}\b', query.upper())
-        excluded_words = {"GET", "THE", "FOR", "AND", "BUT", "NOT", "YOU", "ALL", "CAN", "STOCK", "PRICE"}
+        excluded_words = {"GET", "THE", "FOR", "AND", "BUT", "NOT", "YOU", "ALL", "CAN", "STOCK", "PRICE", "WHAT", "TELL", "ABOUT"}
         valid_tickers = [t for t in tickers if t not in excluded_words]
         
         # Check for common company names and map to tickers
@@ -380,7 +473,9 @@ class RuleBasedQueryParser:
             "amazon": "AMZN",
             "meta": "META",
             "facebook": "META",
-            "nvidia": "NVDA"
+            "nvidia": "NVDA",
+            "netflix": "NFLX",
+            "salesforce": "CRM"
         }
         
         for company, ticker in company_mapping.items():
@@ -417,7 +512,7 @@ class RuleBasedQueryParser:
     @staticmethod
     def parse_server_info_query(query: str) -> Optional[Dict[str, Any]]:
         query_lower = query.lower().strip()
-        server_keywords = ["server", "info", "information", "about server", "server status"]
+        server_keywords = ["server", "info", "information", "about server", "server status", "server details"]
         
         if any(keyword in query_lower for keyword in server_keywords):
             return {
@@ -431,7 +526,7 @@ class RuleBasedQueryParser:
     @staticmethod
     def parse_query(query: str) -> Optional[Dict[str, Any]]:
         # Health check
-        if any(word in query.lower() for word in ["health", "status", "ping"]):
+        if any(word in query.lower() for word in ["health", "status", "ping", "alive"]):
             return {
                 "action": "tool",
                 "tool": "health", 
@@ -453,6 +548,11 @@ class RuleBasedQueryParser:
         server_result = RuleBasedQueryParser.parse_server_info_query(query)
         if server_result:
             return server_result
+        
+        # Trigonometric functions
+        trig_result = RuleBasedQueryParser.parse_trig_query(query)
+        if trig_result:
+            return trig_result
         
         # Calculator
         calc_result = RuleBasedQueryParser.parse_calculator_query(query)
@@ -498,7 +598,7 @@ def format_resource_result(resource_uri: str, content: str) -> str:
     else:
         return f"📄 Resource ({resource_uri}): {content}"
 
-# --- Same extraction and formatting functions as before ---
+# --- Tool Result Extraction and Formatting ---
 def extract_result_data(result):
     """Extract actual data from FastMCP result object"""
     try:
@@ -558,7 +658,7 @@ def format_result(tool_name: str, result: Dict) -> str:
                 num1 = result.get('num1', '?')
                 unit = result.get('unit', '?')
                 trig_result = result.get('result', '?')
-                return f"📐 {operation}({num1}) = {trig_result} [unit: {unit}]"
+                return f"📐 {operation}({num1}°) = {trig_result} [{unit}]"
         elif "error" in result:
             return f"❌ Trig Error: {result['error']}"
     
@@ -591,9 +691,9 @@ def format_result(tool_name: str, result: Dict) -> str:
     except (TypeError, ValueError):
         return f"✅ Result: {str(result)}"
 
-# --- Main Demo with LLM Integration and Resource Support ---
-async def run_llm_demo():
-    print("🚀 LLM-powered MCP client demo starting...")
+# --- Main Demo Function ---
+async def run_enhanced_demo():
+    print("🚀 Enhanced LLM-powered MCP client demo starting...")
     print(f"🤖 Using LLM Provider: {LLM_PROVIDER}")
     
     # Initialize parsers
@@ -606,9 +706,9 @@ async def run_llm_demo():
         print(f"📡 Connecting to MCP server: {server_path}")
         
         async with Client(server_path) as client:
-            print("✅ Connected to MCP server (local)!")
+            print("✅ Connected to MCP server!")
             
-            # Discover available tools and resources for LLM context
+            # Discover available tools and resources
             available_tools = []
             available_resources = []
             
@@ -619,8 +719,28 @@ async def run_llm_demo():
                     available_tools = [
                         {"name": tool.name, "description": tool.description} for tool in tools
                     ]
-                    print(f"✅ Found {len(available_tools)} tools for LLM context")
-                else:
+                    print(f"✅ Found {len(available_tools)} tools")
+                
+                # Get resources
+                try:
+                    resources = await client.list_resources()
+                    if resources:
+                        available_resources = [
+                            {"uri": resource.uri, "description": resource.description}
+                            for resource in resources
+                        ]
+                        print(f"✅ Found {len(available_resources)} resources")
+                except Exception as e:
+                    logging.warning(f"Resource discovery failed: {e}")
+                    available_resources = []
+                
+                # Add known dynamic resources that don't appear in discovery
+                dynamic_resources = [
+                    {"uri": "stock://{ticker}", "description": "Stock company information for any ticker"}
+                ]
+                available_resources.extend(dynamic_resources)
+                
+                if not available_tools:
                     # Fallback tool definitions
                     available_tools = [
                         {"name": "calculator", "description": "Perform arithmetic operations"},
@@ -630,43 +750,25 @@ async def run_llm_demo():
                         {"name": "echo", "description": "Echo back messages"}
                     ]
                 
-                # Get resources
-                try:
-                    resources = await client.list_resources()
-                    if resources:
-                        available_resources = [
-                            {"uri": resource.uri, "description": resource.description} for resource in resources
-                        ]
-                        print(f"✅ Found {len(available_resources)} resources for LLM context")
-                    else:
-                        # Fallback resource definitions including dynamic ones
-                        available_resources = [
-                            {"uri": "info://server", "description": "Server information"},
-                            {"uri": "stock://{ticker}", "description": "Stock company information for any ticker"}
-                        ]
-                except Exception as e:
-                    logging.warning(f"Resource discovery failed: {e}")
-                    available_resources = []
-                
-                # Add known dynamic resources that don't appear in discovery
-                # These are templated resources that work but don't show in list_resources()
-                dynamic_resources = [
-                    {"uri": "stock://{ticker}", "description": "Stock company information for any ticker"}
-                ]
-                available_resources.extend(dynamic_resources)
-                
-                print(f"ℹ️  Note: Dynamic resources like stock://{{ticker}} don't appear in discovery but are available")
+                if not available_resources:
+                    # Fallback resource definitions
+                    available_resources = [
+                        {"uri": "info://server", "description": "Server information"},
+                        {"uri": "stock://{ticker}", "description": "Stock company information for any ticker"}
+                    ]
                     
             except Exception as e:
                 logging.error(f"Tool/Resource discovery failed: {e}")
             
             print(f"\n{'='*70}")
-            print("🎯 LLM-Powered Interactive Demo with Resource Support!")
+            print("🎯 Enhanced LLM-Powered MCP Client Demo!")
+            print(f"🤖 Model: {getattr(llm_parser, 'model_name', 'Unknown')} ({LLM_PROVIDER})")
             print("\n📝 Try natural language queries:")
             print("   Tool examples:")
             print("   • 'What's fifteen plus twenty seven?'")
             print("   • 'Can you multiply 12 by 8?'")
             print("   • 'Find sine of 30 degrees'")
+            print("   • 'Calculate cosine of pi/4 radians'")
             print("   • 'I need the current Apple stock price'")
             print("   • 'How much is Tesla trading for?'")
             print("   • 'Please echo back: Hello AI!'")
@@ -683,6 +785,7 @@ async def run_llm_demo():
             print("   • 'tools' - List available tools")
             print("   • 'resources' - List available resources") 
             print("   • 'switch' - Switch parsing mode")
+            print("   • 'provider [name]' - Switch LLM provider")
             print("   • 'exit' - Quit the demo")
             print(f"{'='*70}")
             
@@ -703,6 +806,17 @@ async def run_llm_demo():
                         use_llm = not use_llm
                         mode = "LLM" if use_llm else "Rule-based"
                         print(f"🔄 Switched to {mode} parsing mode")
+                        continue
+                    
+                    if user_input.lower().startswith('provider '):
+                        new_provider = user_input[9:].strip()
+                        if new_provider in LLM_MODELS:
+                            print(f"🔄 Switching to {new_provider}...")
+                            llm_parser = LLMQueryParser(new_provider)
+                            use_llm = llm_parser.client is not None
+                            print(f"✅ Now using {new_provider}" if use_llm else f"❌ Failed to initialize {new_provider}")
+                        else:
+                            print(f"❌ Unknown provider. Available: {', '.join(LLM_MODELS)}")
                         continue
                     
                     if user_input.lower() == 'tools':
@@ -786,138 +900,23 @@ async def run_llm_demo():
         print("  pip install fastmcp yfinance")
         print(f"  Ensure {server_path} exists in the current directory")
 
-# --- Resource Demo Function ---
-async def demo_resources():
-    """Standalone demo function to showcase resource usage"""
-    print("📚 MCP Resource Demo")
-    print("=" * 40)
-    
-    server_path = "mcp_server.py"
-    
-    try:
-        async with Client(server_path) as client:
-            print("✅ Connected to MCP server!")
-            
-            # List available resources
-            print("\n🔍 Discovering resources...")
-            try:
-                resources = await client.list_resources()
-                if resources:
-                    print(f"✅ Found {len(resources)} resources:")
-                    for resource in resources:
-                        print(f"   • {resource.uri}: {resource.description}")
-                else:
-                    print("📝 No resources discovered")
-                    return
-            except Exception as e:
-                print(f"❌ Failed to list resources: {e}")
-                return
-            
-            # Demo 1: Read server info resource
-            print("\n" + "="*50)
-            print("📖 Demo 1: Reading server info resource")
-            print("="*50)
-            
-            try:
-                print("🔍 Reading: info://server")
-                result = await client.read_resource("info://server")
-                content = extract_resource_data(result)
-                print(format_resource_result("info://server", content))
-            except Exception as e:
-                print(f"❌ Error: {e}")
-            
-            # Demo 2: Read stock info resources for different companies
-            print("\n" + "="*50)
-            print("📖 Demo 2: Reading stock company info resources")
-            print("="*50)
-            
-            test_tickers = ["AAPL", "GOOGL", "MSFT", "TSLA", "AMZN"]
-            
-            for ticker in test_tickers:
-                try:
-                    resource_uri = f"stock://{ticker}"
-                    print(f"\n🔍 Reading: {resource_uri}")
-                    result = await client.read_resource(resource_uri)
-                    content = extract_resource_data(result)
-                    print(format_resource_result(resource_uri, content))
-                except Exception as e:
-                    print(f"❌ Error reading {resource_uri}: {e}")
-            
-            # Demo 3: Combined tool + resource usage
-            print("\n" + "="*60)
-            print("📖 Demo 3: Combined tool call + resource read")
-            print("="*60)
-            
-            test_ticker = "AAPL"
-            print(f"\n🎯 Getting both price data and company info for {test_ticker}")
-            
-            try:
-                # Get current stock price using tool
-                print(f"🔧 Calling stock_quote tool for {test_ticker}")
-                tool_result = await client.call_tool("stock_quote", {"ticker": test_ticker})
-                tool_data = extract_result_data(tool_result)
-                print(format_result("stock_quote", tool_data))
-                
-                # Get company info using resource
-                resource_uri = f"stock://{test_ticker}"
-                print(f"📚 Reading resource: {resource_uri}")
-                resource_result = await client.read_resource(resource_uri)
-                resource_content = extract_resource_data(resource_result)
-                print(format_resource_result(resource_uri, resource_content))
-                
-            except Exception as e:
-                print(f"❌ Error in combined demo: {e}")
-            
-            print("\n" + "="*50)
-            print("✅ Resource demo completed!")
-            print("="*50)
-            
-    except Exception as e:
-        print(f"❌ Failed to connect to server: {e}")
-
 def main():
-    """Run the LLM-powered async demo"""
-    print("🤖 LLM-Powered MCP Client with Resource Support")
+    """Run the enhanced LLM-powered async demo"""
+    print("🤖 Enhanced LLM-Powered MCP Client")
     print("=" * 50)
     print(f"Selected LLM Provider: {LLM_PROVIDER}")
     
-    if LLM_PROVIDER == "ollama":
-        print("📋 Ollama Setup Instructions:")
-        print("1. Install Ollama: https://ollama.ai")
-        print("2. Run: ollama pull llama3.2")
-        print("3. Start Ollama service")
-    elif LLM_PROVIDER == "openai":
-        print("📋 Set environment variable: OPENAI_API_KEY")
-    elif LLM_PROVIDER == "anthropic":
-        print("📋 Set environment variable: ANTHROPIC_API_KEY")
-    elif LLM_PROVIDER == "gemini":
-        print("📋 Set environment variable: GEMINI_API_KEY")
-    elif LLM_PROVIDER == "bedrock":
-        print("📋 AWS Bedrock Setup Instructions:")
-        print("1. Install boto3: pip install boto3")
-        print("2. Configure AWS credentials (choose one):")
-        print("   • AWS CLI: aws configure")
-        print("   • Environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION")
-        print("   • IAM roles (if running on AWS)")
-        print("   • AWS SSO: aws sso login")
-        print("3. Ensure you have access to Claude 3.5 Sonnet in Bedrock")
-        print("4. Set AWS_DEFAULT_REGION if needed (default: us-east-1)")
+    print("\n📋 Setup Instructions:")
+    print("Available LLM providers:")
+    print("  • OpenAI (GPT-4o-mini): Set OPENAI_API_KEY")
+    print("  • Anthropic (Claude 3.5 Sonnet): Set ANTHROPIC_API_KEY")
+    print("  • Google Gemini: Set GEMINI_API_KEY")
+    print("  • Ollama (Local): Install and run Ollama")
+    print("  • AWS Bedrock: Configure AWS credentials")
     
     print("=" * 50)
     
-    # Ask user which demo to run
-    print("\nChoose demo mode:")
-    print("1. Interactive LLM-powered client (default)")
-    print("2. Resource demonstration only")
-    
-    try:
-        choice = input("\nEnter choice (1 or 2, default=1): ").strip()
-        if choice == "2":
-            asyncio.run(demo_resources())
-        else:
-            asyncio.run(run_llm_demo())
-    except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+    asyncio.run(run_enhanced_demo())
 
 if __name__ == '__main__':
     main()

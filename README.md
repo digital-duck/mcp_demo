@@ -14,7 +14,27 @@
 - [source](https://github.com/jlowin/fastmcp)
 - [docs](https://gofastmcp.com/getting-started/welcome)
 
-A fast, Pythonic way to build MCP servers and clients
+A high-level, fast, Pythonic way to build MCP servers and clients
+
+```bash
+# install
+pip install fastmcp
+
+# verify version
+fastmcp version
+
+FastMCP version:                                                            2.5.2
+MCP version:                                                                1.9.2
+Python version:                                                            3.13.2
+Platform:                            Linux-6.8.0-60-generic-x86_64-with-glibc2.35
+FastMCP root path:              ~/anaconda3/envs/mcp/lib/python3.13/site-packages
+
+# dev install
+git clone https://github.com/jlowin/fastmcp.git
+cd fastmcp
+uv sync
+
+```
 
 ### Fast Agent
 
@@ -31,7 +51,7 @@ Both Anthropic (Haiku, Sonnet, Opus) and OpenAI models (gpt-4o/gpt-4.1 family, o
 A `fastmcp` tutorial using Gemini.
 
 - MCP server:
-    - `mcp_server.py`: implements tools/resources like calculator, trigonometry function, yahoo finance API call
+    - `mcp_server.py`: collection of tools/resources like calculator, trigonometry function, yahoo finance API call
 - MCP clients:
     - `mcp_client_simple.py`: simple client with rule-based query parsing
     - `mcp_client_llm.py`: client with LLM-based query parsing
@@ -55,6 +75,12 @@ python mcp_server.py
 # python mcp_client_simple.py
 python mcp_client_llm.py
 # python mcp_client_llm_resource.py
+```
+
+#### Streamlit MCP app
+
+```bash
+streamlit run st_mcp_app.py
 ```
 
 ### FastMCP - AWS

@@ -1,6 +1,8 @@
+nest-asyncio
 fastmcp[server]
 uvicorn
 requests
 yfinance
 google-generativeai
-nest-asyncio
+openai
+anthropic
