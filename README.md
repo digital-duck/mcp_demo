@@ -12,6 +12,7 @@
 ### FastMCP
 
 - [source](https://github.com/jlowin/fastmcp)
+    - [fork](git@github.com:wgong/fastmcp.git) : (~/projects/wgong/MCP/fastmcp)
 - [docs](https://gofastmcp.com/getting-started/welcome)
 
 A high-level, fast, Pythonic way to build MCP servers and clients
@@ -39,10 +40,12 @@ uv sync
 ### Fast Agent
 
 - [source](https://github.com/evalstate/fast-agent)
+    - [fork](https://github.com/wgong/fast-agent) : (~/projects/wgong/MCP/fast-agent)
 - [story](https://llmindset.co.uk/resources/fast-agent/)
 
 A framework with complete, end-to-end tested MCP Feature support including Sampling, which helps create and interact with sophisticated Agents and Workflows in minutes. 
 Both Anthropic (Haiku, Sonnet, Opus) and OpenAI models (gpt-4o/gpt-4.1 family, o1/o3 family) are supported
+
 
 ## Demos
 

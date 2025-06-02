@@ -6,18 +6,28 @@ import os
 import sqlite3
 import pandas as pd
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from fastmcp import Client
 from datetime import datetime
 import hashlib
+import numpy as np
+
+# RAG dependencies
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    st.warning("⚠️ RAG features disabled. Install: pip install sentence-transformers scikit-learn")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Streamlit page config
 st.set_page_config(
-    page_title="MCP Client Demo",
-    page_icon="🚀",
+    page_title="MCP Client with RAG",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -58,6 +68,22 @@ st.markdown("""
         font-family: monospace;
         font-size: 0.9rem;
     }
+    .rag-match {
+        background-color: #d1ecf1;
+        border-left: 4px solid #17a2b8;
+        padding: 0.5rem;
+        margin: 0.25rem 0;
+        border-radius: 0.25rem;
+        font-size: 0.9rem;
+    }
+    .similarity-score {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 0.2rem 0.4rem;
+        border-radius: 0.2rem;
+        font-weight: bold;
+        font-size: 0.8rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,6 +115,8 @@ class ChatHistoryDB:
                     parameters TEXT,
                     confidence REAL,
                     reasoning TEXT,
+                    rag_matches TEXT,
+                    similarity_scores TEXT,
                     response_data TEXT,
                     formatted_response TEXT,
                     elapsed_time_ms INTEGER,
@@ -106,16 +134,17 @@ class ChatHistoryDB:
                 INSERT INTO chat_history (
                     session_id, timestamp, llm_provider, model_name, parsing_mode,
                     user_query, parsed_action, tool_name, resource_uri, parameters,
-                    confidence, reasoning, response_data, formatted_response,
-                    elapsed_time_ms, error_message, success
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    confidence, reasoning, rag_matches, similarity_scores, response_data, 
+                    formatted_response, elapsed_time_ms, error_message, success
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 entry.get('session_id'), entry.get('timestamp'), entry.get('llm_provider'),
                 entry.get('model_name'), entry.get('parsing_mode'), entry.get('user_query'),
                 entry.get('parsed_action'), entry.get('tool_name'), entry.get('resource_uri'),
                 entry.get('parameters'), entry.get('confidence'), entry.get('reasoning'),
-                entry.get('response_data'), entry.get('formatted_response'),
-                entry.get('elapsed_time_ms'), entry.get('error_message'), entry.get('success', True)
+                entry.get('rag_matches'), entry.get('similarity_scores'), entry.get('response_data'),
+                entry.get('formatted_response'), entry.get('elapsed_time_ms'), 
+                entry.get('error_message'), entry.get('success', True)
             ))
             entry_id = cursor.lastrowid
             conn.commit()
@@ -139,6 +168,256 @@ class ChatHistoryDB:
             columns = [description[0] for description in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+# --- RAG System for MCP Tools/Resources ---
+class MCPRAGSystem:
+    def __init__(self):
+        self.model = None
+        self.tool_embeddings = None
+        self.resource_embeddings = None
+        self.tool_contexts = []
+        self.resource_contexts = []
+        
+        if RAG_AVAILABLE:
+            self.initialize_model()
+    
+    def initialize_model(self):
+        """Initialize sentence transformer model"""
+        try:
+            # Use a fast, efficient model for embeddings
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            logging.info("✅ RAG System initialized with all-MiniLM-L6-v2")
+        except Exception as e:
+            logging.error(f"❌ Failed to initialize RAG model: {e}")
+            self.model = None
+    
+    def build_rich_context(self, item: Dict, item_type: str) -> str:
+        """Build rich context for tools and resources with examples and synonyms"""
+        if item_type == "tool":
+            name = item.get('name', '')
+            desc = item.get('description', '')
+            
+            # Enhanced context with usage examples and synonyms
+            context_map = {
+                'calculator': """
+Tool: calculator
+Description: Performs mathematical arithmetic operations
+Type: computation tool
+Usage examples: 
+- Basic math: "15 plus 27", "multiply 8 by 4", "divide 100 by 5"
+- Advanced: "what's 2 to the power of 3", "square root calculation"
+- Keywords: add, subtract, multiply, divide, power, math, compute, calculate
+Synonyms: math, arithmetic, computation, calculate, compute
+                """,
+                'trig': """
+Tool: trig  
+Description: Trigonometric functions (sine, cosine, tangent)
+Type: mathematical tool
+Usage examples:
+- "sine of 30 degrees", "cosine of 45", "tangent of 60 degrees"
+- "sin(π/4)", "cos(0)", "tan(90 degrees)"
+- Unit support: degrees, radians
+Keywords: trigonometry, sine, cosine, tangent, sin, cos, tan, angle
+Synonyms: trigonometry, trig functions, angles, geometry
+                """,
+                'health': """
+Tool: health
+Description: Server health check and status monitoring  
+Type: diagnostic tool
+Usage examples:
+- "health check", "server status", "is server running"
+- "ping server", "system status", "connectivity test"
+Keywords: health, status, ping, check, monitor, diagnostic
+Synonyms: status, ping, check, monitor, diagnostic, connectivity
+                """,
+                'echo': """
+Tool: echo
+Description: Echo back messages for testing
+Type: utility tool  
+Usage examples:
+- "echo hello world", "repeat this message", "say hello"
+- Testing connectivity and response
+Keywords: echo, repeat, say, message, test
+Synonyms: repeat, say, message, test, respond
+                """
+            }
+            
+            # Return specific context or generic one
+            return context_map.get(name, f"""
+Tool: {name}
+Description: {desc}
+Type: generic tool
+Usage: General purpose tool for {name} operations
+Keywords: {name}
+            """).strip()
+            
+        elif item_type == "resource":
+            uri = item.get('uri', '')
+            desc = item.get('description', '')
+            
+            # Build context for resources
+            if 'stock' in uri.lower():
+                return f"""
+Resource: {uri}
+Description: {desc}
+Type: financial data resource
+Usage examples:
+- Stock information, financial data, company details
+- Market data, stock prices, financial analysis  
+Keywords: stock, finance, market, company, financial, investment
+Synonyms: stocks, shares, equity, financial data, market data
+                """.strip()
+            else:
+                return f"""
+Resource: {uri}
+Description: {desc}
+Type: data resource
+Usage: Access to {uri} data and information
+Keywords: {uri.split('/')[-1] if '/' in uri else uri}
+                """.strip()
+        
+        return f"{item_type}: {item}"
+    
+    def build_embeddings(self, tools: List[Dict], resources: List[Dict]):
+        """Build embeddings for all tools and resources"""
+        if not self.model:
+            return
+        
+        try:
+            # Build rich contexts
+            self.tool_contexts = [
+                {
+                    'name': tool.get('name', ''),
+                    'description': tool.get('description', ''),
+                    'context': self.build_rich_context(tool, 'tool'),
+                    'type': 'tool'
+                }
+                for tool in tools
+            ]
+            
+            self.resource_contexts = [
+                {
+                    'uri': resource.get('uri', ''),
+                    'description': resource.get('description', ''),
+                    'context': self.build_rich_context(resource, 'resource'),
+                    'type': 'resource'
+                }
+                for resource in resources
+            ]
+            
+            # Create embeddings
+            if self.tool_contexts:
+                tool_texts = [item['context'] for item in self.tool_contexts]
+                self.tool_embeddings = self.model.encode(tool_texts)
+                logging.info(f"✅ Built embeddings for {len(self.tool_contexts)} tools")
+            
+            if self.resource_contexts:
+                resource_texts = [item['context'] for item in self.resource_contexts]
+                self.resource_embeddings = self.model.encode(resource_texts)
+                logging.info(f"✅ Built embeddings for {len(self.resource_contexts)} resources")
+                
+        except Exception as e:
+            logging.error(f"❌ Failed to build embeddings: {e}")
+    
+    def semantic_search(self, query: str, top_k: int = 5) -> List[Dict]:
+        """Perform semantic search across tools and resources"""
+        if not self.model:
+            return []
+        
+        try:
+            # Encode the query
+            query_embedding = self.model.encode([query])
+            results = []
+            
+            # Search tools
+            if self.tool_embeddings is not None and len(self.tool_embeddings) > 0:
+                tool_similarities = cosine_similarity(query_embedding, self.tool_embeddings)[0]
+                
+                for i, similarity in enumerate(tool_similarities):
+                    if similarity > 0.1:  # Minimum similarity threshold
+                        results.append({
+                            'item': self.tool_contexts[i],
+                            'similarity': float(similarity),
+                            'type': 'tool'
+                        })
+            
+            # Search resources  
+            if self.resource_embeddings is not None and len(self.resource_embeddings) > 0:
+                resource_similarities = cosine_similarity(query_embedding, self.resource_embeddings)[0]
+                
+                for i, similarity in enumerate(resource_similarities):
+                    if similarity > 0.1:  # Minimum similarity threshold
+                        results.append({
+                            'item': self.resource_contexts[i],
+                            'similarity': float(similarity),
+                            'type': 'resource'
+                        })
+            
+            # Sort by similarity and return top_k
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+            return results[:top_k]
+            
+        except Exception as e:
+            logging.error(f"❌ Semantic search failed: {e}")
+            return []
+    
+    def build_dynamic_prompt(self, relevant_items: List[Dict], query: str) -> str:
+        """Build dynamic system prompt based on relevant items"""
+        if not relevant_items:
+            return "You are a tool selection assistant. Respond with ONLY a JSON object with action, tool, params, confidence, and reasoning fields."
+        
+        # Build tools section
+        tools_section = "Available tools:\n"
+        for item in relevant_items:
+            if item['type'] == 'tool':
+                tool_info = item['item']
+                similarity = item['similarity']
+                tools_section += f"- {tool_info['name']}: {tool_info['description']} (relevance: {similarity:.2f})\n"
+        
+        # Build resources section
+        resources_section = "\nAvailable resources:\n"
+        for item in relevant_items:
+            if item['type'] == 'resource':
+                resource_info = item['item']
+                similarity = item['similarity']
+                resources_section += f"- {resource_info['uri']}: {resource_info['description']} (relevance: {similarity:.2f})\n"
+        
+        # Examples based on most relevant items
+        examples_section = "\nExamples based on available tools:\n"
+        
+        # Add specific examples for discovered tools
+        for item in relevant_items[:3]:  # Top 3 most relevant
+            if item['type'] == 'tool':
+                tool_name = item['item']['name']
+                if tool_name == 'calculator':
+                    examples_section += '- "15 plus 27" -> {"action": "tool", "tool": "calculator", "params": {"operation": "add", "num1": 15, "num2": 27}, "confidence": 0.98, "reasoning": "Simple addition"}\n'
+                elif tool_name == 'trig':
+                    examples_section += '- "sine of 30 degrees" -> {"action": "tool", "tool": "trig", "params": {"operation": "sine", "num1": 30, "unit": "degree"}, "confidence": 0.95, "reasoning": "Trigonometric calculation"}\n'
+                elif tool_name == 'health':
+                    examples_section += '- "health check" -> {"action": "tool", "tool": "health", "params": {}, "confidence": 0.9, "reasoning": "Server health check"}\n'
+                elif tool_name == 'echo':
+                    examples_section += '- "echo hello" -> {"action": "tool", "tool": "echo", "params": {"message": "hello"}, "confidence": 0.95, "reasoning": "Echo command"}\n'
+        
+        system_prompt = f"""You are an intelligent tool selection assistant. Analyze the user query and respond with ONLY a JSON object:
+
+{{
+    "action": "tool",
+    "tool": "tool_name_or_null",
+    "params": {{"param1": "value1"}},
+    "confidence": 0.95,
+    "reasoning": "Brief explanation"
+}}
+
+{tools_section}{resources_section}{examples_section}
+
+Instructions:
+- Only use tools/resources listed above
+- Consider the relevance scores when making decisions
+- Set confidence based on query clarity and tool match
+- If no tool matches well (all relevance < 0.3), set tool to null
+- Respond with ONLY the JSON object, no other text."""
+
+        return system_prompt
+
 # Initialize session state
 def init_session_state():
     if 'chat_history_db' not in st.session_state:
@@ -155,10 +434,16 @@ def init_session_state():
         st.session_state.available_tools = []
     if 'available_resources' not in st.session_state:
         st.session_state.available_resources = []
+    if 'use_rag' not in st.session_state:
+        st.session_state.use_rag = True
     if 'last_parsed_query' not in st.session_state:
         st.session_state.last_parsed_query = None
+    if 'rag_system' not in st.session_state:
+        st.session_state.rag_system = MCPRAGSystem()
+    if 'last_rag_matches' not in st.session_state:
+        st.session_state.last_rag_matches = []
 
-# --- LLM Query Parser ---
+# --- Enhanced LLM Query Parser with RAG ---
 class LLMQueryParser:
     def __init__(self, provider: str = "anthropic"):
         self.provider = provider
@@ -194,7 +479,79 @@ class LLMQueryParser:
             st.error(f"Failed to initialize {self.provider}: {e}")
             self.client = None
     
+    def parse_query_with_rag(self, query: str, rag_system: MCPRAGSystem) -> Optional[Dict[str, Any]]:
+        """Parse query using RAG-enhanced semantic search"""
+        if not self.client or not rag_system.model:
+            return None
+        
+        try:
+            # Perform semantic search
+            relevant_items = rag_system.semantic_search(query, top_k=5)
+            
+            # Store RAG matches for debugging
+            st.session_state.last_rag_matches = relevant_items
+            
+            if not relevant_items:
+                # Fallback to standard parsing if no relevant items found
+                return self.parse_query_sync(query)
+            
+            # Build dynamic prompt based on relevant items
+            system_prompt = rag_system.build_dynamic_prompt(relevant_items, query)
+            
+            # Get LLM response with dynamic prompt
+            if self.provider == "anthropic":
+                response = self.client.messages.create(
+                    model=self.model_name,
+                    max_tokens=400,
+                    temperature=0.1,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": f"Query: {query}"}]
+                )
+                llm_response = response.content[0].text.strip()
+            
+            elif self.provider == "openai":
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Query: {query}"}
+                    ],
+                    temperature=0.1,
+                    max_tokens=400
+                )
+                llm_response = response.choices[0].message.content.strip()
+            
+            elif self.provider == "gemini":
+                response = self.client.generate_content(
+                    f"{system_prompt}\n\nUser Query: {query}",
+                    generation_config={"temperature": 0.1, "max_output_tokens": 400}
+                )
+                llm_response = response.text.strip()
+            
+            # Clean and parse JSON
+            if llm_response.startswith("```json"):
+                llm_response = llm_response.replace("```json", "").replace("```", "").strip()
+            elif llm_response.startswith("```"):
+                llm_response = llm_response.replace("```", "").strip()
+            
+            parsed_response = json.loads(llm_response)
+            
+            # Add RAG metadata
+            parsed_response['rag_enhanced'] = True
+            parsed_response['rag_matches'] = len(relevant_items)
+            
+            if parsed_response.get("action") and parsed_response.get("confidence", 0) >= 0.3:
+                return parsed_response
+            
+        except Exception as e:
+            logging.error(f"RAG-enhanced parsing error: {e}")
+            # Fallback to standard parsing
+            return self.parse_query_sync(query)
+        
+        return None
+    
     def parse_query_sync(self, query: str) -> Optional[Dict[str, Any]]:
+        """Legacy parsing method with hardcoded examples"""
         if not self.client:
             return None
         
@@ -257,6 +614,7 @@ Respond with ONLY the JSON object."""
                 llm_response = llm_response.replace("```", "").strip()
             
             parsed_response = json.loads(llm_response)
+            parsed_response['rag_enhanced'] = False
             
             if parsed_response.get("action") and parsed_response.get("confidence", 0) >= 0.5:
                 return parsed_response
@@ -275,11 +633,11 @@ class RuleBasedQueryParser:
         
         # Health check
         if any(word in query_lower for word in ["health", "status", "ping"]):
-            return {"action": "tool", "tool": "health", "params": {}, "confidence": 0.9, "reasoning": "Health check request"}
+            return {"action": "tool", "tool": "health", "params": {}, "confidence": 0.9, "reasoning": "Health check request", "rag_enhanced": False}
         
         # Echo command
         if query_lower.startswith("echo "):
-            return {"action": "tool", "tool": "echo", "params": {"message": query[5:].strip()}, "confidence": 0.95, "reasoning": "Echo command"}
+            return {"action": "tool", "tool": "echo", "params": {"message": query[5:].strip()}, "confidence": 0.95, "reasoning": "Echo command", "rag_enhanced": False}
         
         # Calculator
         calc_patterns = [
@@ -300,7 +658,8 @@ class RuleBasedQueryParser:
                             "tool": "calculator", 
                             "params": {"operation": operation, "num1": float(numbers[0]), "num2": float(numbers[1])},
                             "confidence": 0.9,
-                            "reasoning": f"Calculator operation: {operation}"
+                            "reasoning": f"Calculator operation: {operation}",
+                            "rag_enhanced": False
                         }
         
         # Trig functions
@@ -321,7 +680,8 @@ class RuleBasedQueryParser:
                             "tool": "trig",
                             "params": {"operation": operation, "num1": float(numbers[0]), "unit": unit},
                             "confidence": 0.9,
-                            "reasoning": f"Trigonometry: {operation}"
+                            "reasoning": f"Trigonometry: {operation}",
+                            "rag_enhanced": False
                         }
         
         return None
@@ -430,12 +790,29 @@ def main():
     init_session_state()
     
     # Header
-    st.markdown('<h1 class="main-header">🚀 MCP Client Demo</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🧠 MCP Client with RAG</h1>', unsafe_allow_html=True)
     
     # Sidebar Configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
         st.info(f"📍 **Session ID:** `{st.session_state.session_id}`")
+        
+        # RAG System Status
+        st.subheader("🧠 RAG System")
+        if RAG_AVAILABLE and st.session_state.rag_system.model:
+            st.success("✅ RAG System Active")
+            st.info("🔍 Semantic search enabled")
+            
+            # RAG settings
+            st.session_state.use_rag = st.checkbox(
+                "🎯 Use RAG-Enhanced Parsing",
+                value=st.session_state.use_rag,
+                help="Use semantic search to find relevant tools dynamically"
+            )
+        else:
+            st.error("❌ RAG System Disabled")
+            st.warning("Install: `pip install sentence-transformers scikit-learn`")
+            st.session_state.use_rag = False
         
         # LLM Provider Selection
         st.session_state.llm_provider = st.selectbox(
@@ -449,6 +826,14 @@ def main():
             "🧠 Use LLM Parsing",
             value=st.session_state.use_llm
         )
+        
+        # Parsing Mode Display
+        if st.session_state.use_llm and st.session_state.use_rag and RAG_AVAILABLE:
+            st.info("🎯 **Mode:** RAG-Enhanced LLM")
+        elif st.session_state.use_llm:
+            st.info("🤖 **Mode:** Legacy LLM")
+        else:
+            st.info("📝 **Mode:** Rule-based")
         
         # API Keys Status
         st.subheader("🔑 API Keys Status")
@@ -474,6 +859,10 @@ def main():
             st.session_state.available_tools = tools
             st.session_state.available_resources = resources
             
+            # Build RAG embeddings when tools/resources are available
+            if RAG_AVAILABLE and st.session_state.rag_system.model:
+                st.session_state.rag_system.build_embeddings(tools, resources)
+            
         except Exception as e:
             st.session_state.server_connected = False
             st.session_state.available_tools = []
@@ -486,7 +875,7 @@ def main():
         
         # Connection Status
         if st.session_state.server_connected:
-            st.success("🟢 Server Connected (Discovery Cached)")
+            st.success("🟢 Server Connected")
             
             # Show tools and resources if connected
             if st.session_state.available_tools:
@@ -498,6 +887,12 @@ def main():
                 with st.expander("📚 Available Resources"):
                     for resource in st.session_state.available_resources:
                         st.write(f"• **{resource['uri']}**: {resource['description']}")
+            
+            # RAG Embeddings Status
+            if RAG_AVAILABLE and st.session_state.rag_system.model:
+                tool_count = len(st.session_state.rag_system.tool_contexts)
+                resource_count = len(st.session_state.rag_system.resource_contexts)
+                st.info(f"🎯 RAG: {tool_count} tools, {resource_count} resources indexed")
         else:
             st.error("🔴 Server Disconnected")
             st.info("💡 Make sure mcp_server.py is running, then click 'Refresh Server Discovery'")
@@ -508,6 +903,8 @@ def main():
             st.session_state.example_query = "15 + 27"
         if st.button("sine of 30 degrees"):
             st.session_state.example_query = "sine of 30 degrees"
+        if st.button("compute square root"):
+            st.session_state.example_query = "compute square root of 144"
         if st.button("health check"):
             st.session_state.example_query = "health check"
     
@@ -517,12 +914,12 @@ def main():
     with col1:
         st.subheader("💬 Query Interface")
         
-        # Query Input - SIMPLE!
+        # Query Input
         default_query = st.session_state.get('example_query', '')
         user_query = st.text_input(
             "🎯 Enter your query:",
             value=default_query,
-            placeholder="15 + 27"
+            placeholder="compute the square root of 144"
         )
         
         # Clear example after using it
@@ -536,20 +933,27 @@ def main():
             if st.button("🗑️ Clear Session"):
                 st.session_state.session_id = hashlib.md5(f"{datetime.now()}{os.getpid()}".encode()).hexdigest()[:8]
                 st.session_state.last_parsed_query = None
+                st.session_state.last_rag_matches = []
                 st.success("✅ New session started!")
                 st.rerun()
         
-        # Process Query using cached resources!
+        # Process Query using RAG!
         if submit_button and user_query:
             try:
                 # Parse query
                 parsed_query = None
                 model_name = None
+                rag_matches = []
                 
                 if st.session_state.use_llm:
                     parser = LLMQueryParser(st.session_state.llm_provider)
                     if parser.client:
-                        parsed_query = parser.parse_query_sync(user_query)
+                        # Use RAG-enhanced parsing if available
+                        if st.session_state.use_rag and RAG_AVAILABLE and st.session_state.rag_system.model:
+                            parsed_query = parser.parse_query_with_rag(user_query, st.session_state.rag_system)
+                            rag_matches = st.session_state.last_rag_matches
+                        else:
+                            parsed_query = parser.parse_query_sync(user_query)
                         model_name = parser.model_name
                     else:
                         st.warning("🔄 LLM not available, using rule-based parsing")
@@ -568,19 +972,25 @@ def main():
                     if results and any(r.get('success', True) for r in results):
                         st.session_state.server_connected = True
                     
-                    # Save to database
+                    # Save to database with RAG data
                     db_entry = {
                         'session_id': st.session_state.session_id,
                         'timestamp': datetime.now(),
                         'llm_provider': st.session_state.llm_provider if st.session_state.use_llm else None,
                         'model_name': model_name,
-                        'parsing_mode': 'LLM' if st.session_state.use_llm else 'Rule-based',
+                        'parsing_mode': 'RAG-Enhanced' if parsed_query.get('rag_enhanced') else ('LLM' if st.session_state.use_llm else 'Rule-based'),
                         'user_query': user_query,
                         'parsed_action': parsed_query.get('action'),
                         'tool_name': parsed_query.get('tool'),
                         'parameters': json.dumps(parsed_query.get('params', {})),
                         'confidence': parsed_query.get('confidence'),
                         'reasoning': parsed_query.get('reasoning'),
+                        'rag_matches': json.dumps([{
+                            'name': m['item'].get('name', m['item'].get('uri', '')),
+                            'similarity': m['similarity'],
+                            'type': m['type']
+                        } for m in rag_matches]) if rag_matches else None,
+                        'similarity_scores': json.dumps([m['similarity'] for m in rag_matches]) if rag_matches else None,
                         'elapsed_time_ms': elapsed_time,
                         'success': all(result.get('success', True) for result in results)
                     }
@@ -588,7 +998,31 @@ def main():
                     entry_id = st.session_state.chat_history_db.insert_chat_entry(db_entry)
                     
                     # Display results
-                    st.success(f"✅ Query processed in {elapsed_time}ms (Entry ID: {entry_id})")
+                    parsing_mode = "RAG-Enhanced" if parsed_query.get('rag_enhanced') else "Legacy"
+                    st.success(f"✅ Query processed in {elapsed_time}ms using {parsing_mode} parsing (Entry ID: {entry_id})")
+                    
+                    # Show RAG matches if available
+                    if rag_matches:
+                        st.markdown("### 🎯 RAG Search Results:")
+                        for i, match in enumerate(rag_matches[:3]):  # Show top 3
+                            item = match['item']
+                            similarity = match['similarity']
+                            item_type = match['type']
+                            
+                            if item_type == 'tool':
+                                name = item.get('name', 'Unknown')
+                                desc = item.get('description', '')
+                            else:
+                                name = item.get('uri', 'Unknown')
+                                desc = item.get('description', '')
+                            
+                            st.markdown(f"""
+                            <div class="rag-match">
+                                <strong>#{i+1} {item_type.title()}:</strong> {name}<br>
+                                <small>{desc}</small><br>
+                                <span class="similarity-score">Similarity: {similarity:.3f}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
                     
                     for result in results:
                         if result['type'] == 'tool':
@@ -602,7 +1036,7 @@ def main():
                     
             except Exception as e:
                 st.error(f"❌ Error processing query: {e}")
-                st.info("💡 Try clicking 'Refresh MCP Connection' if connection issues persist")
+                st.info("💡 Try clicking 'Refresh Server Discovery' if connection issues persist")
     
     with col2:
         st.subheader("📊 Query Analysis")
@@ -618,10 +1052,30 @@ def main():
                 "Tool": parsed_query.get('tool'),
                 "Parameters": parsed_query.get('params', {}),
                 "Confidence": parsed_query.get('confidence'),
-                "Reasoning": parsed_query.get('reasoning')
+                "Reasoning": parsed_query.get('reasoning'),
+                "RAG Enhanced": parsed_query.get('rag_enhanced', False),
+                "RAG Matches": parsed_query.get('rag_matches', 0)
             }
             st.json(debug_info)
             st.markdown('</div>', unsafe_allow_html=True)
+        
+        # RAG matches details
+        if st.session_state.last_rag_matches:
+            with st.expander("🎯 Detailed RAG Matches"):
+                for i, match in enumerate(st.session_state.last_rag_matches):
+                    item = match['item']
+                    similarity = match['similarity']
+                    item_type = match['type']
+                    
+                    st.write(f"**Match #{i+1} ({item_type})**")
+                    st.write(f"• Similarity: {similarity:.4f}")
+                    if item_type == 'tool':
+                        st.write(f"• Tool: {item.get('name', 'Unknown')}")
+                        st.write(f"• Description: {item.get('description', 'No description')}")
+                    else:
+                        st.write(f"• Resource: {item.get('uri', 'Unknown')}")
+                        st.write(f"• Description: {item.get('description', 'No description')}")
+                    st.write("---")
         
         # Session stats
         try:
@@ -639,16 +1093,30 @@ def main():
                 if len(recent_entries) > 1:
                     successful = sum(1 for entry in recent_entries if entry['success'])
                     avg_time = sum(entry['elapsed_time_ms'] or 0 for entry in recent_entries) / len(recent_entries)
+                    rag_enhanced_count = sum(1 for entry in recent_entries if entry['parsing_mode'] == 'RAG-Enhanced')
                     
                     st.markdown("**Session Statistics:**")
                     st.metric("Queries", len(recent_entries))
                     st.metric("Success Rate", f"{(successful/len(recent_entries)*100):.1f}%")
                     st.metric("Avg Response Time", f"{avg_time:.0f}ms")
+                    st.metric("RAG-Enhanced", f"{rag_enhanced_count}/{len(recent_entries)}")
             else:
                 st.info("💡 No queries in this session yet. Try asking something!")
                 
         except Exception as e:
             st.error(f"Error loading query analysis: {e}")
+        
+        # Testing suggestions
+        st.subheader("🧪 Test RAG System")
+        st.markdown("""
+        **Try these semantic queries:**
+        - "compute the square root of 144"
+        - "what's the cosine of 45 degrees"  
+        - "mathematical operation: 15 plus 27"
+        - "trigonometric function sine 30"
+        - "server diagnostics"
+        - "repeat this message: hello"
+        """)
 
 if __name__ == "__main__":
     main()

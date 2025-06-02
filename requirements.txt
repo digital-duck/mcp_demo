@@ -7,3 +7,5 @@ google-generativeai
 openai
 anthropic
 streamlit
+sentence-transformers 
+scikit-learn
