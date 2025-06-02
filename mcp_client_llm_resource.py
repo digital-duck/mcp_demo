@@ -90,7 +90,7 @@ class LLMQueryParser:
                 if response.status_code == 200:
                     logging.info("✅ Ollama server detected")
                     self.client = "ollama"  # Use string indicator
-                    self.model_name = "llama3.2"
+                    self.model_name = "qwen2.5"  # "llama3.2"
                 else:
                     logging.error("❌ Ollama server not responding")
                     self.client = None
@@ -107,11 +107,12 @@ class LLMQueryParser:
                     genai.configure(api_key=api_key)
                     # Updated Gemini models list
                     gemini_models = [
-                        "gemini-2.0-flash-exp",
-                        "gemini-exp-1206", 
-                        "gemini-2.0-flash-thinking-exp-1219",
-                        "gemini-1.5-pro",
+                        "gemini-2.5-flash-preview-05-20",
+                        "gemini-2.5-pro-preview-05-06",
+                        "gemini-2.0-flash",
                         "gemini-1.5-flash",
+                        "gemini-1.5-pro",
+
                     ]
                     
                     # Try models in order of preference
@@ -909,7 +910,7 @@ def main():
     print("\n📋 Setup Instructions:")
     print("Available LLM providers:")
     print("  • OpenAI (GPT-4o-mini): Set OPENAI_API_KEY")
-    print("  • Anthropic (Claude 3.5 Sonnet): Set ANTHROPIC_API_KEY")
+    print("  • Anthropic (Claude 3.5 Sonnet) - (Default): Set ANTHROPIC_API_KEY") 
     print("  • Google Gemini: Set GEMINI_API_KEY")
     print("  • Ollama (Local): Install and run Ollama")
     print("  • AWS Bedrock: Configure AWS credentials")
