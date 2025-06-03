@@ -1,5 +1,5 @@
 # dev archive versions
-*-v[0-9]*.[0-9]*.py
+*-ERR-v[0-9]*.[0-9]*.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

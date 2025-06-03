@@ -68,10 +68,28 @@ Usage examples:
 # Install sentence transformers first:
 pip install sentence-transformers scikit-learn
 
+
+# Set environment variables
+export ANTHROPIC_API_KEY="your_key_here"
+export OPENAI_API_KEY="your_key_here"  # optional
+export GEMINI_API_KEY="your_key_here"  # optional
+
+# Run the enhanced client
+streamlit run st_mcp_app.py
+
 # Then run the app and try:
 "compute the square root of 144"  # Should find calculator tool
 "what's the cosine of 45 degrees" # Should find trig tool  
 "tell me about Apple company"     # Should find stock resource
+
+# Try these semantic queries:
+
+"compute the square root of 144"
+"what's the cosine of 45 degrees"
+"mathematical operation: 15 plus 27"
+"trigonometric function sine 30"
+"server diagnostics"
+"repeat this message: hello"
 ```
 
 The RAG approach should be **much more accurate** and **completely dynamic** - no more hardcoded tool lists! 🎯

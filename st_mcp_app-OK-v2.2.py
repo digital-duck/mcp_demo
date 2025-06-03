@@ -15,7 +15,6 @@ import numpy as np
 # RAG dependencies
 try:
     from sentence_transformers import SentenceTransformer
-    from sentence_transformers import util as st_util
     from sklearn.metrics.pairwise import cosine_similarity
     RAG_AVAILABLE = True
 except ImportError:
@@ -33,19 +32,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-SAMPLE_QUERIES = """
-- 15 + 27
-- sine of 30 degrees
-- compute square root of 2
-- health check
-- arc tangent of 1.0
-- get stock price of GOOG
-- tell me about company of ticker symbol of AAPL
-- server diagnostics
-- repeat this message: hello MCP server
-"""
-
-CUSTOM_CSS_STYLE = """
+# Custom CSS
+st.markdown("""
 <style>
     .main-header {
         font-size: 2.5rem;
@@ -97,10 +85,7 @@ CUSTOM_CSS_STYLE = """
         font-size: 0.8rem;
     }
 </style>
-"""
-
-# Custom CSS
-st.markdown(CUSTOM_CSS_STYLE, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # LLM Models and Provider Selection
 LLM_MODELS = ["openai", "anthropic", "ollama", "gemini", "bedrock"]
@@ -414,65 +399,7 @@ Keywords: data, resource
             self.resource_embeddings = None
     
     def semantic_search(self, query: str, top_k: int = 5) -> List[Dict]:
-        """Perform optimized semantic search across tools and resources using sentence-transformers util"""
-        if not self.model:
-            return []
-        
-        try:
-            # Encode the query
-            query_embedding = self.model.encode([query])
-            
-            # Combine tool and resource embeddings efficiently
-            all_embeddings = []
-            all_contexts = []
-            
-            if self.tool_embeddings is not None and len(self.tool_embeddings) > 0:
-                all_embeddings.append(self.tool_embeddings)
-                all_contexts.extend([(ctx, 'tool') for ctx in self.tool_contexts])
-            
-            if self.resource_embeddings is not None and len(self.resource_embeddings) > 0:
-                all_embeddings.append(self.resource_embeddings)
-                all_contexts.extend([(ctx, 'resource') for ctx in self.resource_contexts])
-            
-            if not all_embeddings:
-                return []
-            
-            # Concatenate all embeddings into single corpus
-            corpus_embeddings = np.concatenate(all_embeddings, axis=0)
-            
-            # Use optimized semantic_search from sentence-transformers
-            search_results = st_util.semantic_search(
-                query_embedding, 
-                corpus_embeddings, 
-                top_k=top_k,
-                score_function=st_util.cos_sim
-            )[0]  # Get results for first (and only) query
-            
-            # Map results back to our context format
-            results = []
-            for hit in search_results:
-                corpus_id = hit['corpus_id']
-                similarity = float(hit['score'])
-                
-                # Only include results above minimum threshold
-                if similarity > 0.1:
-                    context_item, item_type = all_contexts[corpus_id]
-                    results.append({
-                        'item': context_item,
-                        'similarity': similarity,
-                        'type': item_type
-                    })
-            
-            logging.info(f"✅ Semantic search found {len(results)} relevant items for query: '{query[:50]}...'")
-            return results
-            
-        except Exception as e:
-            logging.error(f"❌ Optimized semantic search failed: {e}")
-            # Fallback to original method if needed
-            return self._fallback_semantic_search(query, top_k)
-    
-    def _fallback_semantic_search(self, query: str, top_k: int = 5) -> List[Dict]:
-        """Fallback to original semantic search method if optimized version fails"""
+        """Perform semantic search across tools and resources"""
         if not self.model:
             return []
         
@@ -481,7 +408,7 @@ Keywords: data, resource
             query_embedding = self.model.encode([query])
             results = []
             
-            # Search tools using original method
+            # Search tools
             if self.tool_embeddings is not None and len(self.tool_embeddings) > 0:
                 tool_similarities = cosine_similarity(query_embedding, self.tool_embeddings)[0]
                 
@@ -493,7 +420,7 @@ Keywords: data, resource
                             'type': 'tool'
                         })
             
-            # Search resources using original method
+            # Search resources  
             if self.resource_embeddings is not None and len(self.resource_embeddings) > 0:
                 resource_similarities = cosine_similarity(query_embedding, self.resource_embeddings)[0]
                 
@@ -507,11 +434,10 @@ Keywords: data, resource
             
             # Sort by similarity and return top_k
             results.sort(key=lambda x: x['similarity'], reverse=True)
-            logging.warning(f"⚠️ Used fallback search method for query: '{query[:50]}...'")
             return results[:top_k]
             
         except Exception as e:
-            logging.error(f"❌ Fallback semantic search also failed: {e}")
+            logging.error(f"❌ Semantic search failed: {e}")
             return []
     
     def build_dynamic_prompt(self, relevant_items: List[Dict], query: str) -> str:
@@ -599,7 +525,7 @@ def init_session_state():
 
 # --- Enhanced LLM Query Parser with RAG ---
 class LLMQueryParser:
-    def __init__(self, provider: str = "gemini"):
+    def __init__(self, provider: str = "anthropic"):
         self.provider = provider
         self.client = None
         self.model_name = None
@@ -1053,10 +979,18 @@ def main():
         
         # Example queries
         st.subheader("💡 Example Queries")
-        st.markdown(SAMPLE_QUERIES)
+        st.markdown("""
+- 15 + 27
+- sine of 30 degrees
+- compute square root of 2
+- health check
+- arc tangent of 1.0
+- server diagnostics
+- repeat this message: hello MCP server
+""")
         # if st.button("15 + 27"):
         #     st.session_state.example_query = "15 + 27"
-
+    
     # Main Content
     col1, col2 = st.columns([2, 1])
     
@@ -1198,7 +1132,7 @@ def main():
             st.success(f"✅ Query processed in {st.session_state.elapsed_time}ms using {parsing_mode} parsing (Entry ID: {st.session_state.entry_id})")
             
             st.markdown('<div class="debug-info">', unsafe_allow_html=True)
-            st.markdown("🔍 Debug - Parsed Query:")
+            st.markdown("[🔍 Debug - Parsed Query]")
             debug_info = {
                 "Action": parsed_query.get('action'),
                 "Tool": parsed_query.get('tool'),
