@@ -6,11 +6,16 @@ import os
 import sqlite3
 import pandas as pd
 import time
+import sys
 from typing import Dict, List, Any, Optional, Tuple
-from fastmcp import Client
 from datetime import datetime
 import hashlib
 import numpy as np
+from pathlib import Path
+
+# MCP Official SDK imports
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 # RAG dependencies
 try:
@@ -27,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Streamlit page config
 st.set_page_config(
-    page_title="MCP Client with RAG",
+    page_title="MCP Client with RAG (Official SDK)",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -106,6 +111,25 @@ st.markdown(CUSTOM_CSS_STYLE, unsafe_allow_html=True)
 LLM_MODELS = ["openai", "anthropic", "ollama", "gemini", "bedrock"]
 DATABASE_FILE = "mcp_chat_history.db"
 
+# --- Helper function to get server path ---
+def get_mcp_server_path(server_filename="mcp_server.py"):
+    """Get absolute path to MCP server file."""
+    try:
+        if '__file__' in globals():
+            current_script_dir = Path(__file__).parent.resolve()
+        else:
+            current_script_dir = Path.cwd()
+        
+        server_path = current_script_dir / server_filename
+        
+        if not server_path.exists():
+            raise FileNotFoundError(f"MCP server file not found: {server_path}")
+        
+        return server_path.resolve()
+    
+    except Exception as e:
+        raise RuntimeError(f"Failed to determine MCP server path: {e}")
+
 # --- Database Operations ---
 class ChatHistoryDB:
     def __init__(self, db_file: str = DATABASE_FILE):
@@ -116,7 +140,6 @@ class ChatHistoryDB:
         with sqlite3.connect(self.db_file) as conn:
             cursor = conn.cursor()
             
-            # Create table with original schema first
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,18 +164,6 @@ class ChatHistoryDB:
                     success BOOLEAN NOT NULL DEFAULT 1
                 )
             """)
-            
-            # # Check if new columns exist and add them if needed
-            # cursor.execute("PRAGMA table_info(chat_history)")
-            # columns = [column[1] for column in cursor.fetchall()]
-            
-            # if 'rag_matches' not in columns:
-            #     cursor.execute("ALTER TABLE chat_history ADD COLUMN rag_matches TEXT")
-            #     logging.info("✅ Added rag_matches column to database")
-            
-            # if 'similarity_scores' not in columns:
-            #     cursor.execute("ALTER TABLE chat_history ADD COLUMN similarity_scores TEXT")
-            #     logging.info("✅ Added similarity_scores column to database")
             
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_id ON chat_history(session_id)")
             conn.commit()
@@ -213,7 +224,6 @@ class MCPRAGSystem:
     def initialize_model(self):
         """Initialize sentence transformer model"""
         try:
-            # Use a fast, efficient model for embeddings
             self.model = SentenceTransformer('all-MiniLM-L6-v2')
             logging.info("✅ RAG System initialized with all-MiniLM-L6-v2")
         except Exception as e:
@@ -268,10 +278,19 @@ Usage examples:
 - Testing connectivity and response
 Keywords: echo, repeat, say, message, test
 Synonyms: repeat, say, message, test, respond
+                """,
+                'stock_quote': """
+Tool: stock_quote
+Description: Get live stock market data and quotes
+Type: financial tool
+Usage examples:
+- "get stock price of AAPL", "GOOGL stock quote", "Tesla stock price"
+- "what's the current price of Microsoft stock"
+Keywords: stock, quote, price, ticker, market, finance
+Synonyms: stock price, share price, market data, ticker
                 """
             }
             
-            # Return specific context or generic one
             return context_map.get(name, f"""
 Tool: {name}
 Description: {desc}
@@ -281,17 +300,14 @@ Keywords: {name}
             """).strip()
             
         elif item_type == "resource":
-            # Handle both string URIs and AnyUrl objects safely
             uri_raw = item.get('uri', '')
             try:
-                # Convert AnyUrl to string if needed
                 uri = str(uri_raw) if hasattr(uri_raw, '__str__') else uri_raw
             except Exception:
                 uri = 'unknown_resource'
             
             desc = item.get('description', '')
             
-            # Build context for resources - use safe string operations
             try:
                 uri_lower = uri.lower() if isinstance(uri, str) else str(uri).lower()
                 
@@ -307,7 +323,6 @@ Keywords: stock, finance, market, company, financial, investment
 Synonyms: stocks, shares, equity, financial data, market data
                     """.strip()
                 else:
-                    # Safe extraction of resource name
                     try:
                         resource_name = uri.split('/')[-1] if '/' in str(uri) else str(uri)
                     except Exception:
@@ -321,7 +336,6 @@ Usage: Access to {uri} data and information
 Keywords: {resource_name}
                     """.strip()
             except Exception as e:
-                # Fallback for any string operation failures
                 logging.warning(f"Failed to process resource URI: {e}")
                 return f"""
 Resource: {uri}
@@ -352,7 +366,6 @@ Keywords: data, resource
                     })
                 except Exception as e:
                     logging.warning(f"Failed to build context for tool {tool.get('name', 'unknown')}: {e}")
-                    # Add fallback context
                     self.tool_contexts.append({
                         'name': tool.get('name', 'unknown'),
                         'description': tool.get('description', ''),
@@ -364,7 +377,6 @@ Keywords: data, resource
             for resource in resources:
                 try:
                     context = self.build_rich_context(resource, 'resource')
-                    # Safe URI extraction
                     uri_raw = resource.get('uri', '')
                     uri = str(uri_raw) if uri_raw else 'unknown_resource'
                     
@@ -376,7 +388,6 @@ Keywords: data, resource
                     })
                 except Exception as e:
                     logging.warning(f"Failed to build context for resource {resource.get('uri', 'unknown')}: {e}")
-                    # Add fallback context
                     uri_raw = resource.get('uri', 'unknown_resource')
                     uri = str(uri_raw) if uri_raw else 'unknown_resource'
                     self.resource_contexts.append({
@@ -407,22 +418,19 @@ Keywords: data, resource
                 
         except Exception as e:
             logging.error(f"❌ Failed to build embeddings: {e}")
-            # Ensure we have empty but valid states
             self.tool_contexts = []
             self.resource_contexts = []
             self.tool_embeddings = None
             self.resource_embeddings = None
     
     def semantic_search(self, query: str, top_k: int = 5) -> List[Dict]:
-        """Perform optimized semantic search across tools and resources using sentence-transformers util"""
+        """Perform optimized semantic search across tools and resources"""
         if not self.model:
             return []
         
         try:
-            # Encode the query
             query_embedding = self.model.encode([query])
             
-            # Combine tool and resource embeddings efficiently
             all_embeddings = []
             all_contexts = []
             
@@ -468,7 +476,6 @@ Keywords: data, resource
             
         except Exception as e:
             logging.error(f"❌ Optimized semantic search failed: {e}")
-            # Fallback to original method if needed
             return self._fallback_semantic_search(query, top_k)
     
     def _fallback_semantic_search(self, query: str, top_k: int = 5) -> List[Dict]:
@@ -477,7 +484,6 @@ Keywords: data, resource
             return []
         
         try:
-            # Encode the query
             query_embedding = self.model.encode([query])
             results = []
             
@@ -550,6 +556,8 @@ Keywords: data, resource
                     examples_section += '- "health check" -> {"action": "tool", "tool": "health", "params": {}, "confidence": 0.9, "reasoning": "Server health check"}\n'
                 elif tool_name == 'echo':
                     examples_section += '- "echo hello" -> {"action": "tool", "tool": "echo", "params": {"message": "hello"}, "confidence": 0.95, "reasoning": "Echo command"}\n'
+                elif tool_name == 'stock_quote':
+                    examples_section += '- "get stock price of AAPL" -> {"action": "tool", "tool": "stock_quote", "params": {"ticker": "AAPL"}, "confidence": 0.9, "reasoning": "Stock price query"}\n'
         
         system_prompt = f"""You are an intelligent tool selection assistant. Analyze the user query and respond with ONLY a JSON object:
 
@@ -722,12 +730,14 @@ class LLMQueryParser:
 Available tools:
 - calculator: operation (add/subtract/multiply/divide/power), num1, num2
 - trig: operation (sine/cosine/tangent), num1, unit (degree/radian)
+- stock_quote: ticker (e.g., AAPL, GOOGL)
 - health: no parameters
 - echo: message
 
 Examples:
 "15 plus 27" -> {"action": "tool", "tool": "calculator", "params": {"operation": "add", "num1": 15, "num2": 27}, "confidence": 0.98, "reasoning": "Simple addition"}
 "sine of 30 degrees" -> {"action": "tool", "tool": "trig", "params": {"operation": "sine", "num1": 30, "unit": "degree"}, "confidence": 0.95, "reasoning": "Trigonometric calculation"}
+"get stock price of AAPL" -> {"action": "tool", "tool": "stock_quote", "params": {"ticker": "AAPL"}, "confidence": 0.9, "reasoning": "Stock price query"}
 
 Respond with ONLY the JSON object."""
         
@@ -793,6 +803,15 @@ class RuleBasedQueryParser:
         if query_lower.startswith("echo "):
             return {"action": "tool", "tool": "echo", "params": {"message": query[5:].strip()}, "confidence": 0.95, "reasoning": "Echo command", "rag_enhanced": False}
         
+        # Stock quote
+        stock_keywords = ["stock", "price", "quote", "ticker"]
+        if any(keyword in query_lower for keyword in stock_keywords):
+            # Look for ticker symbols (3-5 uppercase letters)
+            ticker_match = re.search(r'\b[A-Z]{1,5}\b', query.upper())
+            if ticker_match:
+                ticker = ticker_match.group()
+                return {"action": "tool", "tool": "stock_quote", "params": {"ticker": ticker}, "confidence": 0.85, "reasoning": f"Stock quote for {ticker}", "rag_enhanced": False}
+        
         # Calculator
         calc_patterns = [
             ("add", ["plus", "add", "+", "sum"]),
@@ -842,17 +861,9 @@ class RuleBasedQueryParser:
 
 # --- Utility Functions ---
 def extract_result_data(result):
+    """Extract result data from MCP response"""
     try:
-        if isinstance(result, list) and len(result) > 0:
-            content_item = result[0]
-            if hasattr(content_item, 'text'):
-                try:
-                    return json.loads(content_item.text)
-                except json.JSONDecodeError:
-                    return {"text": content_item.text}
-            else:
-                return {"content": str(content_item)}
-        elif hasattr(result, 'content') and result.content:
+        if hasattr(result, 'content') and result.content:
             content_item = result.content[0]
             if hasattr(content_item, 'text'):
                 try:
@@ -867,6 +878,7 @@ def extract_result_data(result):
         return {"error": f"Could not parse result: {e}"}
 
 def format_result_for_display(tool_name: str, result: Dict) -> str:
+    """Format result for display"""
     if isinstance(result, dict) and "error" in result:
         return f"❌ [Error] {result['error']}"
     
@@ -878,6 +890,14 @@ def format_result_for_display(tool_name: str, result: Dict) -> str:
         expression = result.get('expression', f"{result.get('operation', '?')}({result.get('num1', '?')}) = {result.get('result', '?')}")
         return f"📐 [Trigonometry] {expression}"
     
+    elif tool_name == "stock_quote":
+        if "error" in result:
+            return f"❌ [Stock] {result['error']}"
+        ticker = result.get('ticker', 'Unknown')
+        price = result.get('current_price', 'N/A')
+        company = result.get('company_name', 'Unknown Company')
+        return f"📈 [Stock] {company} ({ticker}): ${price}"
+    
     elif tool_name == "health":
         return f"✅ [Health] {result.get('message', 'Server is healthy')}"
     
@@ -887,28 +907,62 @@ def format_result_for_display(tool_name: str, result: Dict) -> str:
     return f"✅ [Result] {json.dumps(result, indent=2)}"
 
 # --- CACHED MCP Operations using st.cache_resource ---
-@st.cache_resource  
+@st.cache_resource(show_spinner=False)
 def get_mcp_server_info():
     """Get cached server info (tools/resources) - cached across reruns"""
     async def _discover():
-        async with Client("./mcp_server.py") as client:
-            # Get tools
-            tools = await client.list_tools()
-            available_tools = [{"name": tool.name, "description": tool.description} for tool in tools] if tools else []
+        try:
+            server_path = str(get_mcp_server_path("mcp_server.py"))
+            server_params = StdioServerParameters(
+                command=sys.executable,
+                args=[server_path],
+                env=dict(os.environ)  # Pass current environment
+            )
             
-            # Get resources
-            try:
-                resources = await client.list_resources()
-                available_resources = [{"uri": resource.uri, "description": resource.description} for resource in resources] if resources else []
-            except:
-                available_resources = []
-            
-            return available_tools, available_resources
+            # Set a shorter timeout for Windows
+            async with asyncio.timeout(10):  # 10 second timeout
+                async with stdio_client(server_params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        # Initialize the session
+                        init_result = await session.initialize()
+                        logging.info(f"Session initialized: {init_result}")
+                        
+                        # Get tools
+                        tools_result = await session.list_tools()
+                        available_tools = []
+                        if tools_result and tools_result.tools:
+                            available_tools = [
+                                {"name": tool.name, "description": tool.description} 
+                                for tool in tools_result.tools
+                            ]
+                        
+                        # Get resources
+                        try:
+                            resources_result = await session.list_resources()
+                            available_resources = []
+                            if resources_result and resources_result.resources:
+                                available_resources = [
+                                    {"uri": str(resource.uri), "description": resource.description} 
+                                    for resource in resources_result.resources
+                                ]
+                        except Exception as e:
+                            logging.warning(f"Failed to get resources: {e}")
+                            available_resources = []
+                        
+                        logging.info(f"Discovered {len(available_tools)} tools and {len(available_resources)} resources")
+                        return available_tools, available_resources
+                        
+        except asyncio.TimeoutError:
+            logging.error("Server discovery timed out - is mcp_server.py running?")
+            raise Exception("Server discovery timed out. Make sure mcp_server.py is running.")
+        except Exception as e:
+            logging.error(f"Failed to discover server info: {e}")
+            raise e
     
     return asyncio.run(_discover())
 
 async def execute_mcp_query_async(parsed_query):
-    """Execute MCP query with proper async context manager"""
+    """Execute MCP query with proper async context manager using official SDK"""
     start_time = time.time()
     
     action = parsed_query.get("action")
@@ -919,17 +973,39 @@ async def execute_mcp_query_async(parsed_query):
     
     if action == "tool" and tool_name:
         try:
-            # Use proper async context manager for each query
-            async with Client("mcp_server.py") as client:
-                tool_result = await client.call_tool(tool_name, parameters)
-                tool_data = extract_result_data(tool_result)
-                results.append({
-                    "type": "tool",
-                    "name": tool_name,
-                    "data": tool_data,
-                    "success": "error" not in tool_data
-                })
+            server_path = str(get_mcp_server_path("mcp_server.py"))
+            server_params = StdioServerParameters(
+                command=sys.executable,
+                args=[server_path],
+                env=dict(os.environ)  # Pass current environment
+            )
+            
+            # Set timeout for tool execution
+            async with asyncio.timeout(30):  # 30 second timeout for tool calls
+                async with stdio_client(server_params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        # Initialize the session
+                        await session.initialize()
+                        
+                        # Call the tool
+                        logging.info(f"Calling tool {tool_name} with params: {parameters}")
+                        tool_result = await session.call_tool(tool_name, parameters)
+                        tool_data = extract_result_data(tool_result)
+                        
+                        results.append({
+                            "type": "tool",
+                            "name": tool_name,
+                            "data": tool_data,
+                            "success": "error" not in tool_data
+                        })
+        except asyncio.TimeoutError:
+            results.append({
+                "type": "error",
+                "message": f"Tool call timed out after 30 seconds",
+                "success": False
+            })
         except Exception as e:
+            logging.error(f"Tool call error: {e}")
             results.append({
                 "type": "error",
                 "message": f"Tool call error: {e}",
@@ -944,7 +1020,7 @@ def main():
     init_session_state()
     
     # Header
-    st.markdown('<h1 class="main-header">🧠 MCP Client with RAG</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🧠 MCP Client with RAG (Official SDK)</h1>', unsafe_allow_html=True)
     
     # Sidebar Configuration
     with st.sidebar:
@@ -1005,22 +1081,30 @@ def main():
         
         # Try to get cached server info (tools/resources)
         try:
-            # This will use cached discovery if available
-            tools, resources = get_mcp_server_info()
-            
-            # If we get here, server is reachable
-            st.session_state.server_connected = True
-            st.session_state.available_tools = tools
-            st.session_state.available_resources = resources
-            
-            # Build RAG embeddings when tools/resources are available
-            if RAG_AVAILABLE and st.session_state.rag_system.model:
-                st.session_state.rag_system.build_embeddings(tools, resources)
+            with st.spinner("🔍 Discovering MCP server..."):
+                # This will use cached discovery if available
+                tools, resources = get_mcp_server_info()
+                
+                # If we get here, server is reachable
+                st.session_state.server_connected = True
+                st.session_state.available_tools = tools
+                st.session_state.available_resources = resources
+                
+                # Build RAG embeddings when tools/resources are available
+                if RAG_AVAILABLE and st.session_state.rag_system.model:
+                    st.session_state.rag_system.build_embeddings(tools, resources)
             
         except Exception as e:
             st.session_state.server_connected = False
             st.session_state.available_tools = []
             st.session_state.available_resources = []
+            
+            # Show the specific error to help debugging
+            if "timed out" in str(e).lower():
+                st.error("🔴 Server Connection Timeout")
+                st.info("💡 Make sure `python mcp_server.py` is running in another terminal")
+            else:
+                st.error(f"🔴 Server Error: {str(e)[:100]}...")
         
         if st.button("🔄 Refresh Server Discovery"):
             # Clear cache and rediscover
@@ -1054,8 +1138,6 @@ def main():
         # Example queries
         st.subheader("💡 Example Queries")
         st.markdown(SAMPLE_QUERIES)
-        # if st.button("15 + 27"):
-        #     st.session_state.example_query = "15 + 27"
 
     # Main Content
     col1, col2 = st.columns([2, 1])
@@ -1178,8 +1260,6 @@ def main():
                         elif result['type'] == 'error':
                             st.markdown(f'<div class="error-message">❌ {result["message"]}</div>', unsafe_allow_html=True)
 
-                    
-
                 else:
                     st.error("❓ I couldn't understand your query. Please try rephrasing.")
                     
@@ -1189,7 +1269,6 @@ def main():
     
     with col2:
         st.subheader("📊 Query Analysis")
-
 
         # Display debug info
         if st.session_state.last_parsed_query:
@@ -1257,7 +1336,7 @@ def main():
                 
         except Exception as e:
             st.error(f"Error loading query analysis: {e}")
-        
 
+# Entry point
 if __name__ == "__main__":
     main()
