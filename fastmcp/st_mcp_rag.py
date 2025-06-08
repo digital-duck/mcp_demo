@@ -35,14 +35,20 @@ st.set_page_config(
 
 SAMPLE_QUERIES = """
 - 15 + 27
-- sine of 30 degrees
+- what is 3 times 4
+- 9 divide 3
+- calculate power of 2 to 3
 - compute square root of 2
-- health check
-- arc tangent of 1.0
+- sine of 30 degrees
+- tan(45 degree)
+- find  arc tangent of 1 in degree
 - get stock price of GOOG
-- tell me about company of ticker symbol of AAPL
+- find company details for ticker GOOG
+- Get company info about AAPL
+- health check
 - server diagnostics
 - repeat this message: hello MCP server
+- what is pi (fail)
 """
 
 CUSTOM_CSS_STYLE = """
@@ -103,12 +109,109 @@ CUSTOM_CSS_STYLE = """
 st.markdown(CUSTOM_CSS_STYLE, unsafe_allow_html=True)
 
 # LLM Models and Provider Selection
-LLM_MODELS = ["openai", "anthropic", "ollama", "gemini", "bedrock"]
-DATABASE_FILE = "mcp_chat_history.db"
+LLM_PROVIDER_MAP = {
+    "google": [
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-pro-preview-05-06",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+    ],
+    "openai": [
+        "gpt-4o-mini", 
+        "gpt-4o", 
+        "gpt-3.5-turbo",
+    ],
+    "anthropic": [
+        "claude-3-5-sonnet-20241022", 
+        "claude-3-7-sonnet",
+    ],
+    # "ollama": [
+    #     "qwen2.5",
+    # ],
+    # "bedrock": [
+    #     "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    # ],
+}
+
+MCP_SERVER_PATH = "mcp_server.py"
+SQLITE_DB_FILE = "mcp_chat_history.db"
+
+TABLE_CHAT_HISTORY = "chat_history"
+CHAT_HISTORY_DDL = f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_CHAT_HISTORY} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        timestamp DATETIME NOT NULL,
+        llm_provider TEXT,
+        model_name TEXT,
+        parsing_mode TEXT,
+        user_query TEXT NOT NULL,
+        parsed_action TEXT,
+        tool_name TEXT,
+        resource_uri TEXT,
+        parameters TEXT,
+        confidence REAL,
+        reasoning TEXT,
+        rag_matches TEXT,
+        similarity_scores TEXT,
+        response_data TEXT,
+        formatted_response TEXT,
+        elapsed_time_ms INTEGER,
+        error_message TEXT,
+        success BOOLEAN NOT NULL DEFAULT 1
+    )
+"""
+
+def ask_llm(provider, client, model_name, query, system_prompt, max_tokens=300, temperature=0.1):
+    # Get LLM response with dynamic prompt
+    if provider == "anthropic":
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": f"Query: {query}"}]
+        )
+        llm_response = response.content[0].text.strip()
+    
+    elif provider == "openai":
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Query: {query}"}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        llm_response = response.choices[0].message.content.strip()
+    
+    elif provider == "google":
+        response = client.generate_content(
+            f"{system_prompt}\n\nUser Query: {query}",
+            generation_config={
+                "temperature": temperature, 
+                "max_output_tokens": max_tokens,
+            }
+        )
+        llm_response = response.text.strip()
+    else:
+        st.error(f"Unsupported LLM provider: {provider}")
+        return None
+    
+    # Clean and parse JSON
+    if llm_response.startswith("```json"):
+        llm_response = llm_response.replace("```json", "").replace("```", "").strip()
+    elif llm_response.startswith("```"):
+        llm_response = llm_response.replace("```", "").strip()
+    
+    parsed_response = json.loads(llm_response)
+    return parsed_response
 
 # --- Database Operations ---
 class ChatHistoryDB:
-    def __init__(self, db_file: str = DATABASE_FILE):
+    def __init__(self, db_file: str = SQLITE_DB_FILE):
         self.db_file = db_file
         self.init_database()
     
@@ -117,30 +220,7 @@ class ChatHistoryDB:
             cursor = conn.cursor()
             
             # Create table with original schema first
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS chat_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    timestamp DATETIME NOT NULL,
-                    llm_provider TEXT,
-                    model_name TEXT,
-                    parsing_mode TEXT,
-                    user_query TEXT NOT NULL,
-                    parsed_action TEXT,
-                    tool_name TEXT,
-                    resource_uri TEXT,
-                    parameters TEXT,
-                    confidence REAL,
-                    reasoning TEXT,
-                    rag_matches TEXT,
-                    similarity_scores TEXT,
-                    response_data TEXT,
-                    formatted_response TEXT,
-                    elapsed_time_ms INTEGER,
-                    error_message TEXT,
-                    success BOOLEAN NOT NULL DEFAULT 1
-                )
-            """)
+            cursor.execute(CHAT_HISTORY_DDL)
             
             # # Check if new columns exist and add them if needed
             # cursor.execute("PRAGMA table_info(chat_history)")
@@ -154,14 +234,14 @@ class ChatHistoryDB:
             #     cursor.execute("ALTER TABLE chat_history ADD COLUMN similarity_scores TEXT")
             #     logging.info("✅ Added similarity_scores column to database")
             
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_id ON chat_history(session_id)")
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_session_id ON {TABLE_CHAT_HISTORY}(session_id)")
             conn.commit()
     
     def insert_chat_entry(self, entry: Dict[str, Any]) -> int:
         with sqlite3.connect(self.db_file) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO chat_history (
+            cursor.execute(f"""
+                INSERT INTO {TABLE_CHAT_HISTORY} (
                     session_id, timestamp, llm_provider, model_name, parsing_mode,
                     user_query, parsed_action, tool_name, resource_uri, parameters,
                     confidence, reasoning, rag_matches, similarity_scores, response_data, 
@@ -184,7 +264,7 @@ class ChatHistoryDB:
         with sqlite3.connect(self.db_file) as conn:
             cursor = conn.cursor()
             
-            query = "SELECT * FROM chat_history"
+            query = f"SELECT * FROM {TABLE_CHAT_HISTORY}"
             params = []
             
             if filters and filters.get('session_id'):
@@ -517,7 +597,10 @@ Keywords: data, resource
     def build_dynamic_prompt(self, relevant_items: List[Dict], query: str) -> str:
         """Build dynamic system prompt based on relevant items"""
         if not relevant_items:
-            return "You are a tool selection assistant. Respond with ONLY a JSON object with action, tool, params, confidence, and reasoning fields."
+            return """
+You are a tool selection assistant. 
+Respond with ONLY a JSON object with action, tool, params, confidence, and reasoning fields.
+"""
         
         # Build tools section
         tools_section = "Available tools:\n"
@@ -551,7 +634,9 @@ Keywords: data, resource
                 elif tool_name == 'echo':
                     examples_section += '- "echo hello" -> {"action": "tool", "tool": "echo", "params": {"message": "hello"}, "confidence": 0.95, "reasoning": "Echo command"}\n'
         
-        system_prompt = f"""You are an intelligent tool selection assistant. Analyze the user query and respond with ONLY a JSON object:
+        system_prompt = f"""
+You are an intelligent tool selection assistant. 
+Analyze the user query and respond with ONLY a JSON object:
 
 {{
     "action": "tool",
@@ -561,14 +646,19 @@ Keywords: data, resource
     "reasoning": "Brief explanation"
 }}
 
-{tools_section}{resources_section}{examples_section}
+{tools_section}
+
+{resources_section}
+
+{examples_section}
 
 Instructions:
 - Only use tools/resources listed above
 - Consider the relevance scores when making decisions
 - Set confidence based on query clarity and tool match
 - If no tool matches well (all relevance < 0.3), set tool to null
-- Respond with ONLY the JSON object, no other text."""
+- Respond with ONLY the JSON object, no other text.
+"""
 
         return system_prompt
 
@@ -579,7 +669,7 @@ def init_session_state():
     if 'session_id' not in st.session_state:
         st.session_state.session_id = hashlib.md5(f"{datetime.now()}{os.getpid()}".encode()).hexdigest()[:8]
     if 'llm_provider' not in st.session_state:
-        st.session_state.llm_provider = "anthropic"
+        st.session_state.llm_provider = "google"
     if 'use_llm' not in st.session_state:
         st.session_state.use_llm = True
     if 'server_connected' not in st.session_state:
@@ -599,7 +689,7 @@ def init_session_state():
 
 # --- Enhanced LLM Query Parser with RAG ---
 class LLMQueryParser:
-    def __init__(self, provider: str = "gemini"):
+    def __init__(self, provider: str = "google"):
         self.provider = provider
         self.client = None
         self.model_name = None
@@ -612,22 +702,22 @@ class LLMQueryParser:
                 api_key = os.getenv("ANTHROPIC_API_KEY")
                 if api_key:
                     self.client = anthropic.Anthropic(api_key=api_key)
-                    self.model_name = "claude-3-5-sonnet-20241022"
+                    self.model_name = st.session_state.llm_model_name
             
             elif self.provider == "openai":
                 import openai
                 api_key = os.getenv("OPENAI_API_KEY")
                 if api_key:
                     self.client = openai.OpenAI(api_key=api_key)
-                    self.model_name = "gpt-4o-mini"
+                    self.model_name = st.session_state.llm_model_name
             
-            elif self.provider == "gemini":
+            elif self.provider == "google":
                 import google.generativeai as genai
                 api_key = os.getenv("GEMINI_API_KEY")
                 if api_key:
                     genai.configure(api_key=api_key)
-                    self.client = genai.GenerativeModel("gemini-1.5-flash")
-                    self.model_name = "gemini-1.5-flash"
+                    self.model_name = st.session_state.llm_model_name
+                    self.client = genai.GenerativeModel(self.model_name)
                 
         except Exception as e:
             st.error(f"Failed to initialize {self.provider}: {e}")
@@ -652,44 +742,10 @@ class LLMQueryParser:
             # Build dynamic prompt based on relevant items
             system_prompt = rag_system.build_dynamic_prompt(relevant_items, query)
             
-            # Get LLM response with dynamic prompt
-            if self.provider == "anthropic":
-                response = self.client.messages.create(
-                    model=self.model_name,
-                    max_tokens=400,
-                    temperature=0.1,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": f"Query: {query}"}]
-                )
-                llm_response = response.content[0].text.strip()
-            
-            elif self.provider == "openai":
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Query: {query}"}
-                    ],
-                    temperature=0.1,
-                    max_tokens=400
-                )
-                llm_response = response.choices[0].message.content.strip()
-            
-            elif self.provider == "gemini":
-                response = self.client.generate_content(
-                    f"{system_prompt}\n\nUser Query: {query}",
-                    generation_config={"temperature": 0.1, "max_output_tokens": 400}
-                )
-                llm_response = response.text.strip()
-            
-            # Clean and parse JSON
-            if llm_response.startswith("```json"):
-                llm_response = llm_response.replace("```json", "").replace("```", "").strip()
-            elif llm_response.startswith("```"):
-                llm_response = llm_response.replace("```", "").strip()
-            
-            parsed_response = json.loads(llm_response)
-            
+            parsed_response = ask_llm(self.provider, self.client, self.model_name, query, system_prompt)
+            if not parsed_response:
+                return None
+
             # Add RAG metadata
             parsed_response['rag_enhanced'] = True
             parsed_response['rag_matches'] = len(relevant_items)
@@ -709,7 +765,8 @@ class LLMQueryParser:
         if not self.client:
             return None
         
-        system_prompt = """You are a tool selection assistant. Respond with ONLY a JSON object:
+        system_prompt = """
+You are a tool selection assistant. Respond with ONLY a JSON object:
 
 {
     "action": "tool",
@@ -729,45 +786,14 @@ Examples:
 "15 plus 27" -> {"action": "tool", "tool": "calculator", "params": {"operation": "add", "num1": 15, "num2": 27}, "confidence": 0.98, "reasoning": "Simple addition"}
 "sine of 30 degrees" -> {"action": "tool", "tool": "trig", "params": {"operation": "sine", "num1": 30, "unit": "degree"}, "confidence": 0.95, "reasoning": "Trigonometric calculation"}
 
-Respond with ONLY the JSON object."""
+Respond with ONLY the JSON object.
+"""
         
         try:
-            if self.provider == "anthropic":
-                response = self.client.messages.create(
-                    model=self.model_name,
-                    max_tokens=300,
-                    temperature=0.1,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": query}]
-                )
-                llm_response = response.content[0].text.strip()
-            
-            elif self.provider == "openai":
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": query}
-                    ],
-                    temperature=0.1,
-                    max_tokens=300
-                )
-                llm_response = response.choices[0].message.content.strip()
-            
-            elif self.provider == "gemini":
-                response = self.client.generate_content(
-                    f"{system_prompt}\n\nUser: {query}",
-                    generation_config={"temperature": 0.1, "max_output_tokens": 300}
-                )
-                llm_response = response.text.strip()
-            
-            # Clean and parse JSON
-            if llm_response.startswith("```json"):
-                llm_response = llm_response.replace("```json", "").replace("```", "").strip()
-            elif llm_response.startswith("```"):
-                llm_response = llm_response.replace("```", "").strip()
-            
-            parsed_response = json.loads(llm_response)
+            parsed_response = ask_llm(self.provider, self.client, self.model_name, query, system_prompt)
+            if not parsed_response:
+                return None
+
             parsed_response['rag_enhanced'] = False
             
             if parsed_response.get("action") and parsed_response.get("confidence", 0) >= 0.5:
@@ -891,7 +917,7 @@ def format_result_for_display(tool_name: str, result: Dict) -> str:
 def get_mcp_server_info():
     """Get cached server info (tools/resources) - cached across reruns"""
     async def _discover():
-        async with Client("./mcp_server.py") as client:
+        async with Client(MCP_SERVER_PATH) as client:
             # Get tools
             tools = await client.list_tools()
             available_tools = [{"name": tool.name, "description": tool.description} for tool in tools] if tools else []
@@ -920,7 +946,7 @@ async def execute_mcp_query_async(parsed_query):
     if action == "tool" and tool_name:
         try:
             # Use proper async context manager for each query
-            async with Client("mcp_server.py") as client:
+            async with Client(MCP_SERVER_PATH) as client:
                 tool_result = await client.call_tool(tool_name, parameters)
                 tool_data = extract_result_data(tool_result)
                 results.append({
@@ -939,14 +965,8 @@ async def execute_mcp_query_async(parsed_query):
     elapsed_time = int((time.time() - start_time) * 1000)
     return results, elapsed_time
 
-# --- Main App ---
-def main():
-    init_session_state()
-    
-    # Header
-    st.markdown('<h1 class="main-header">🧠 MCP Client with RAG</h1>', unsafe_allow_html=True)
-    
-    # Sidebar Configuration
+
+def do_sidebar():
     with st.sidebar:
         st.header("⚙️ Configuration")
         st.info(f"📍 [Session ID] `{st.session_state.session_id}`")
@@ -968,13 +988,24 @@ def main():
             st.warning("Install: `pip install sentence-transformers scikit-learn`")
             st.session_state.use_rag = False
         
-        # LLM Provider Selection
-        st.session_state.llm_provider = st.selectbox(
-            "🤖 LLM Provider",
-            LLM_MODELS,
-            index=LLM_MODELS.index(st.session_state.llm_provider)
-        )
-        
+        # LLM Provider/Model Selection
+        c1, c2 = st.columns([2,3])
+        with c1:
+            LLM_PROVIDER_LIST = list(LLM_PROVIDER_MAP.keys())
+            st.session_state.llm_provider = st.selectbox(
+                "🤖 LLM Provider",
+                LLM_PROVIDER_LIST,
+                index=LLM_PROVIDER_LIST.index("google")
+            )
+
+        with c2:
+            LLM_MODEL_NAME_LIST = LLM_PROVIDER_MAP.get(st.session_state.llm_provider)
+            st.session_state.llm_model_name = st.selectbox(
+                "Model Name",
+                LLM_MODEL_NAME_LIST,
+                index=0
+            )
+
         # Parsing Mode
         st.session_state.use_llm = st.checkbox(
             "🧠 Use LLM Parsing",
@@ -983,9 +1014,9 @@ def main():
         
         # Parsing Mode Display
         if st.session_state.use_llm and st.session_state.use_rag and RAG_AVAILABLE:
-            st.info("🎯 [Mode] RAG-Enhanced LLM")
+            st.info("🎯 [Mode] RAG-enhanced LLM")
         elif st.session_state.use_llm:
-            st.info("🤖 [Mode] Legacy LLM")
+            st.info("🤖 [Mode] LLM-based")
         else:
             st.info("📝 [Mode] Rule-based")
         
@@ -994,7 +1025,7 @@ def main():
         api_keys_status = {
             "OpenAI": "✅" if os.getenv("OPENAI_API_KEY") else "❌",
             "Anthropic": "✅" if os.getenv("ANTHROPIC_API_KEY") else "❌",
-            "Gemini": "✅" if os.getenv("GEMINI_API_KEY") else "❌",
+            "Google": "✅" if os.getenv("GEMINI_API_KEY") else "❌",
         }
         
         for provider, status in api_keys_status.items():
@@ -1046,16 +1077,26 @@ def main():
             if RAG_AVAILABLE and st.session_state.rag_system.model:
                 tool_count = len(st.session_state.rag_system.tool_contexts)
                 resource_count = len(st.session_state.rag_system.resource_contexts)
-                st.info(f"🎯 RAG: {tool_count} tools, {resource_count} resources indexed")
+                st.info(f"🎯 RAG: {tool_count} tools, {resource_count} resources indexed. \nDynamic resource is unavailable via list_resources()")
         else:
             st.error("🔴 Server Disconnected")
-            st.info("💡 Make sure mcp_server.py is running, then click 'Refresh Server Discovery'")
+            st.info(f"💡 Make sure {MCP_SERVER_PATH} is running, then click 'Refresh Server Discovery'")
         
         # Example queries
         st.subheader("💡 Example Queries")
         st.markdown(SAMPLE_QUERIES)
         # if st.button("15 + 27"):
         #     st.session_state.example_query = "15 + 27"
+
+# --- Main App ---
+def main():
+    init_session_state()
+    
+    # Header
+    st.markdown('<h1 class="main-header">🧠 MCP Client with RAG</h1>', unsafe_allow_html=True)
+    
+    # Sidebar Configuration
+    do_sidebar()
 
     # Main Content
     col1, col2 = st.columns([2, 1])
@@ -1181,7 +1222,9 @@ def main():
                     
 
                 else:
-                    st.error("❓ I couldn't understand your query. Please try rephrasing.")
+                    st.error("❓ Failed to call MCP tool because I couldn't understand your query.")
+
+
                     
             except Exception as e:
                 st.error(f"❌ Error processing query: {e}")
@@ -1237,21 +1280,23 @@ def main():
             )
             
             if recent_entries:
-                latest_entry = recent_entries[0]
-                st.info(f"🔍 [Parser] {latest_entry['parsing_mode']}")
-                if latest_entry['model_name']:
-                    st.info(f"🤖 [Model] {latest_entry['model_name']}")
-                
-                if len(recent_entries) > 1:
-                    successful = sum(1 for entry in recent_entries if entry['success'])
-                    avg_time = sum(entry['elapsed_time_ms'] or 0 for entry in recent_entries) / len(recent_entries)
-                    rag_enhanced_count = sum(1 for entry in recent_entries if entry['parsing_mode'] == 'RAG-Enhanced')
+
+                with st.expander("[Session Statistics]"):
+
+                    latest_entry = recent_entries[0]
+                    st.info(f"🔍 [Parser] {latest_entry['parsing_mode']}")
+                    if latest_entry['model_name']:
+                        st.info(f"🤖 [Model] {latest_entry['model_name']}")
                     
-                    st.markdown("[Session Statistics]")
-                    st.metric("Queries", len(recent_entries))
-                    st.metric("Success Rate", f"{(successful/len(recent_entries)*100):.1f}%")
-                    st.metric("Avg Response Time", f"{avg_time:.0f}ms")
-                    st.metric("RAG-Enhanced", f"{rag_enhanced_count}/{len(recent_entries)}")
+                    if len(recent_entries) > 1:
+                        successful = sum(1 for entry in recent_entries if entry['success'])
+                        avg_time = sum(entry['elapsed_time_ms'] or 0 for entry in recent_entries) / len(recent_entries)
+                        rag_enhanced_count = sum(1 for entry in recent_entries if entry['parsing_mode'] == 'RAG-Enhanced')
+                        
+                        st.metric("Queries", len(recent_entries))
+                        st.metric("Success Rate", f"{(successful/len(recent_entries)*100):.1f}%")
+                        st.metric("Avg Response Time", f"{avg_time:.0f}ms")
+                        st.metric("RAG-Enhanced", f"{rag_enhanced_count}/{len(recent_entries)}")
             else:
                 st.info("💡 No queries in this session yet. Try asking something!")
                 

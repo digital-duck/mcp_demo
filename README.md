@@ -68,7 +68,7 @@ conda create -n mcp
 conda activate mcp
 git clone https://github.com/digital-duck/mcp_demo.git
 
-cd mcp_demo
+cd mcp_demo/fastmcp
 pip install -r requirements.txt
 
 # in 1st terminal
@@ -76,14 +76,16 @@ python mcp_server.py
 
 # in 2nd terminal
 # python mcp_client_simple.py
-python mcp_client_llm.py
-# python mcp_client_llm_resource.py
+# python mcp_client_llm.py
+python mcp_client_llm_resource.py
 ```
 
 #### Streamlit MCP app
 
+RAG based query parsing, see `MCPRAGSystem` class
+
 ```bash
-streamlit run st_mcp_app.py
+streamlit run st_mcp_rag.py
 ```
 
 ### FastMCP - AWS

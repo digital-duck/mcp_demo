@@ -51,7 +51,8 @@ def calculator(operation: str, num1: float, num2: float) -> dict:
 def trig(operation: str, num1: float, unit: str) -> dict:
     """
     Performs trigonometric operations, with input/output angle (in unit of degree or radian).
-    Supports: sine, cosine, tangent, arc sine, arc cosine, arc tangent
+    Supports: both regular operations (such as sine, cosine, tangent) 
+        and inverse operations (such as arc sine, arc cosine, arc tangent)
     """
     logging.info(f"Trig called: {operation} {num1} in {unit}")
 

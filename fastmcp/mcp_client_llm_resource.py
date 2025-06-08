@@ -9,8 +9,10 @@ from fastmcp import Client
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # LLM Integration Options - Enhanced with Claude 3.5 Sonnet and GPT-4o-mini
-LLM_MODELS = ["openai", "anthropic", "ollama", "gemini", "bedrock"]
-LLM_PROVIDER = "anthropic"  # Default to Claude 3.5 Sonnet
+LLM_MODELS = ["openai", "anthropic", "ollama", "google", "bedrock"]
+LLM_PROVIDER = "google" # "anthropic"  # Default to Claude 3.5 Sonnet
+
+MCP_SERVER_PATH = "mcp_server.py"
 
 # --- Enhanced LLM Query Parser ---
 class LLMQueryParser:
@@ -99,14 +101,14 @@ class LLMQueryParser:
                 logging.error("Make sure Ollama is installed and running: https://ollama.ai")
                 self.client = None
         
-        elif self.provider == "gemini":
+        elif self.provider == "google":
             try:
                 import google.generativeai as genai
                 api_key = os.getenv("GEMINI_API_KEY")
                 if api_key:
                     genai.configure(api_key=api_key)
                     # Updated Gemini models list
-                    gemini_models = [
+                    GEMINI_MODELS = [
                         "gemini-2.5-flash-preview-05-20",
                         "gemini-2.5-pro-preview-05-06",
                         "gemini-2.0-flash",
@@ -116,7 +118,7 @@ class LLMQueryParser:
                     ]
                     
                     # Try models in order of preference
-                    for model_name in gemini_models:
+                    for model_name in GEMINI_MODELS:
                         try:
                             self.client = genai.GenerativeModel(model_name)
                             # Test the model
@@ -166,7 +168,7 @@ class LLMQueryParser:
     
     def get_system_prompt(self, available_tools: List[Dict], available_resources: List[Dict] = None) -> str:
         """Create system prompt with available tools and resources"""
-        tools_desc = "\n".join([
+        tools_desc = "\n\nAvailable tools:\n" + "\n".join([
             f"- {tool['name']}: {tool.get('description', 'No description')}"
             for tool in available_tools
         ])
@@ -178,10 +180,13 @@ class LLMQueryParser:
                 for resource in available_resources
             ])
         
-        return f"""You are a tool and resource selection assistant. Given a user query, you must decide whether to use a tool, read a resource, or both.
+        return f"""
+You are a tool and resource selection assistant. 
+Given a user query, you must decide whether to use a tool, read a resource, or both.
 
-Available tools:
-{tools_desc}{resources_desc}
+{tools_desc}
+
+{resources_desc}
 
 For each user query, respond with ONLY a JSON object in this exact format:
 {{
@@ -233,7 +238,9 @@ Response: {{"action": "both", "tool": "stock_quote", "resource_uri": "stock://AA
 User: "server info"
 Response: {{"action": "resource", "tool": null, "resource_uri": "info://server", "params": {{}}, "confidence": 0.95, "reasoning": "Request for server information"}}
 
-Remember: Respond with ONLY the JSON object, no additional text."""
+Remember: Respond with ONLY the JSON object, no additional text.
+
+"""
 
     async def parse_query_with_llm(self, query: str, available_tools: List[Dict], available_resources: List[Dict] = None) -> Optional[Dict[str, Any]]:
         """Use LLM to parse the query"""
@@ -284,7 +291,7 @@ Remember: Respond with ONLY the JSON object, no additional text."""
                     logging.error(f"Ollama API error: {response.status_code}")
                     return None
             
-            elif self.provider == "gemini":
+            elif self.provider == "google":
                 response = self.client.generate_content(
                     f"{system_prompt}\n\nUser: {query}",
                     generation_config={
@@ -701,12 +708,12 @@ async def run_enhanced_demo():
     llm_parser = LLMQueryParser(LLM_PROVIDER)
     fallback_parser = RuleBasedQueryParser()
     
-    server_path = "mcp_server.py"
+
     
     try:
-        print(f"📡 Connecting to MCP server: {server_path}")
+        print(f"📡 Connecting to MCP server: {MCP_SERVER_PATH}")
         
-        async with Client(server_path) as client:
+        async with Client(MCP_SERVER_PATH) as client:
             print("✅ Connected to MCP server!")
             
             # Discover available tools and resources
@@ -899,7 +906,7 @@ async def run_enhanced_demo():
         print(f"❌ Failed to connect to server: {e}")
         print("\nMake sure the server file exists and FastMCP is installed:")
         print("  pip install fastmcp yfinance")
-        print(f"  Ensure {server_path} exists in the current directory")
+        print(f"  Ensure {MCP_SERVER_PATH} exists in the current directory")
 
 def main():
     """Run the enhanced LLM-powered async demo"""

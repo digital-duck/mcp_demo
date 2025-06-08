@@ -1,4 +1,4 @@
-I've successfully ported your FastMCP implementation to the official MCP Python SDK. Here's what I've created:
+Ported FastMCP implementation to the official MCP Python SDK. 
 
 ## Key Changes Made:
 
@@ -22,13 +22,19 @@ I've successfully ported your FastMCP implementation to the official MCP Python 
 ## Installation Requirements:
 
 ```bash
-# Official MCP SDK
-pip install mcp
+conda create -n mcp
+conda activate mcp
+git clone https://github.com/digital-duck/mcp_demo.git
 
-# For the client (same as before)
-pip install streamlit sentence-transformers scikit-learn
-pip install yfinance pandas numpy
-pip install anthropic openai google-generativeai  # Optional LLM providers
+cd mcp_demo/mcp_sdk
+pip install -r requirements.txt
+
+# in 1st terminal
+python mcp_server.py
+
+
+# in 2nd terminal
+streamlit run st_mcp_app.py
 ```
 
 ## Usage:
