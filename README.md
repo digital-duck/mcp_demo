@@ -49,9 +49,9 @@ Both Anthropic (Haiku, Sonnet, Opus) and OpenAI models (gpt-4o/gpt-4.1 family, o
 
 ## Demos
 
-### FastMCP - Gemini
+### FastMCP 
 
-A `fastmcp` tutorial using Gemini.
+A `fastmcp` tutorial
 
 - MCP server:
     - `mcp_server.py`: collection of tools/resources like calculator, trigonometry function, yahoo finance API call
@@ -75,19 +75,32 @@ pip install -r requirements.txt
 python mcp_server.py
 
 # in 2nd terminal
+python mcp_client_llm_resource.py
 # python mcp_client_simple.py
 # python mcp_client_llm.py
-python mcp_client_llm_resource.py
 ```
 
 #### Streamlit MCP app
 
-RAG based query parsing, see `MCPRAGSystem` class
+see `fastmcp/README.md`
 
 ```bash
 streamlit run st_mcp_rag.py
 ```
 
-### FastMCP - AWS
+#### FastMCP - AWS 
+
+**To Be Built**
 
 see [readme_aws.md](https://github.com/digital-duck/mcp_demo/blob/main/readme_aws.md) for more details
+
+
+### MCP SDK 
+
+see `mcp_sdk` sub-folder
+
+**To Be Verified**
+
+
+
+
